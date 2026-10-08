@@ -15,9 +15,9 @@ Repo: https://github.com/hsanjuan/freellee
 Binaries: https://github.com/hsanjuan/freellee/releases/download/v%v/freellee.apk
 
 Builds:
-  - versionName: 0.0.1
-    versionCode: 1
-    commit: f080b10a270d9b02bc43744d6aaac2d8f3054fd1
+  - versionName: 0.0.2
+    versionCode: 2
+    commit: d5ccfa6d5c6cecbb22ff04fb80259ad3add7471d
     subdir: app
     gradle:
       - yes
@@ -40,5 +40,5 @@ MaintainerNotes: |-
 AutoUpdateMode: Version
 UpdateCheckMode: Tags
 UpdateCheckData: app/build.gradle.kts|versionCode\s*=\s*(\d+)|.|versionName\s*=\s*"([\d.]+)"
-CurrentVersion: 0.0.1
-CurrentVersionCode: 1
+CurrentVersion: 0.0.2
+CurrentVersionCode: 2
