@@ -1,0 +1,61 @@
+config:
+  validation: true
+  warningsAsErrors: false
+
+complexity:
+  active: true
+  CyclomaticComplexMethod:
+    active: false
+    allowedComplexity: 15
+  LongMethod:
+    active: false
+    allowedLines: 80
+  LongParameterList:
+    active: false
+  TooManyFunctions:
+    active: false
+
+exceptions:
+  active: true
+  SwallowedException:
+    active: false
+  TooGenericExceptionCaught:
+    active: false
+
+style:
+  active: true
+  MagicNumber:
+    active: false
+  ExplicitItLambdaMultipleParameters:
+    active: false
+  ExplicitItLambdaParameter:
+    active: false
+  MaxLineLength:
+    active: false
+  ReturnCount:
+    active: false
+  ThrowsCount:
+    active: false
+  UnusedParameter:
+    active: false
+  LoopWithTooManyJumpStatements:
+    active: false
+  FunctionOnlyReturningConstant:
+    active: false
+
+naming:
+  active: true
+  FunctionNaming:
+    active: false
+
+performance:
+  active: false
+
+potential-bugs:
+  active: true
+
+coroutines:
+  active: false
+
+empty-blocks:
+  active: false

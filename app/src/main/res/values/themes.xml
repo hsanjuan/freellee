@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- AMOLED dark-only: the window background must be black so screens that do not paint their
+         own background (onboarding, loading) match the Compose theme instead of showing white. -->
+    <style name="Theme.Freellee" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/black</item>
+        <item name="android:statusBarColor">@color/black</item>
+        <item name="android:navigationBarColor">@color/black</item>
+    </style>
+</resources>

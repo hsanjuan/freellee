@@ -1,0 +1,38 @@
+Categories:
+  - Health Manager
+  - Sports & Health
+License: GPL-3.0-or-later
+AuthorName: Hector
+AuthorEmail: code@hector.link
+AuthorWebSite: https://github.com/hsanjuan/freellee
+SourceCode: https://github.com/hsanjuan/freellee
+IssueTracker: https://github.com/hsanjuan/freellee/issues
+
+AutoName: Freellee
+
+RepoType: git
+Repo: https://github.com/hsanjuan/freellee
+Binaries: https://github.com/hsanjuan/freellee/releases/download/v%v/freellee.apk
+
+Builds:
+  - versionName: 0.0.1
+    versionCode: 1
+    subdir: app
+    gradle:
+      - yes
+
+AllowedAPKSigningKeys: 7e8869ad1ee13f7bd6065208dd184745b77231406c1eb4748b45be7ddf1cbb06
+
+MaintainerNotes: |-
+  Freellee requires Android 14 (API 34) or newer. Health Connect is part of the platform on
+  Android 14+, so Google's standalone Health Connect app (com.google.android.apps.healthdata,
+  required on Android 13 and below) is not needed and is no longer queried. A package query for
+  org.lineageos.health is kept for LineageOS builds that ship their own Health Connect.
+  The release APK is signed with the upstream key (see AllowedAPKSigningKeys) and the project's
+  GitHub Actions workflow is set up for reproducible builds.
+
+AutoUpdateMode: Version
+UpdateCheckMode: Tags
+UpdateCheckData: app/build.gradle.kts|versionCode\s*=\s*(\d+)|.|versionName\s*=\s*"([\d.]+)"
+CurrentVersion: 0.0.1
+CurrentVersionCode: 1

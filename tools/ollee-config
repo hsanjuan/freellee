@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+"""Thin wrapper so the tool can be run as `./ollee-config ...`."""
+import sys
+
+from watchconfig.cli import main
+
+if __name__ == "__main__":
+    sys.exit(main())

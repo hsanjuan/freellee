@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      Bluetooth permissions. Freellee requires Android 14 (API 34) or newer, so only the granular
+      Android 12+ runtime permissions are needed. Declaring neverForLocation on BLUETOOTH_SCAN
+      tells the system we do not derive physical location from scan results.
+    -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <!-- Health Connect permissions. Freellee only writes the data it collects from the watch. -->
+    <uses-permission android:name="android.permission.health.WRITE_STEPS" />
+    <uses-permission android:name="android.permission.health.WRITE_HEART_RATE" />
+    <uses-permission android:name="android.permission.health.WRITE_SKIN_TEMPERATURE" />
+    <uses-permission android:name="android.permission.health.WRITE_EXERCISE" />
+
+    <queries>
+        <!--
+          Health Connect is part of the platform on Android 14+, so Google's standalone
+          com.google.android.apps.healthdata app is not needed. LineageOS ships its own
+          implementation under org.lineageos.health on devices without Google's module.
+        -->
+        <package android:name="org.lineageos.health" />
+    </queries>
+
+    <application
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/full_backup_content"
+        android:icon="@mipmap/ic_launcher"
+        android:label="Freellee"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Freellee">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Freellee">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          Health Connect shows a "Privacy policy" link on its permissions screen and launches the
+          app's rationale through the alias below. The rationale must describe how the app uses
+          the health data it is granted, so it is shown by this dedicated activity rather than the
+          main UI.
+        -->
+        <activity
+            android:name=".PermissionsRationaleActivity"
+            android:exported="false"
+            android:label="Freellee Privacy Policy"
+            android:theme="@style/Theme.Freellee" />
+
+        <!-- Android 14+ (platform Health Connect). Guarded so only the system can launch it. -->
+        <activity-alias
+            android:name=".ViewPermissionUsageActivity"
+            android:exported="true"
+            android:label="Freellee Privacy Policy"
+            android:permission="android.permission.START_VIEW_PERMISSION_USAGE"
+            android:targetActivity=".PermissionsRationaleActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW_PERMISSION_USAGE" />
+                <category android:name="android.intent.category.HEALTH_PERMISSIONS" />
+            </intent-filter>
+        </activity-alias>
+
+    </application>
+
+</manifest>

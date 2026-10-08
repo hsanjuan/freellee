@@ -1,0 +1,16 @@
+Freellee is an unofficial Android app for Ollee Smart Watch boards. It pairs with the watch via Bluetooth LE and syncs step counts, heart rate, and skin temperature data directly to Android Health Connect — no internet required.
+
+Key features:
+
+• Bluetooth LE pairing with Ollee watches
+• Syncs steps, heart rate, and skin temperature records to Android Health Connect
+• Stopwatch events synced as Exercise Sessions to Health Connect
+• Compatible with official Ollee firmware
+
+Skin Temperature
+
+Freellee logs temperature readings as SkinTemperature records (not BodyTemperature) in Health Connect. The day is divided into four periods — night, morning, afternoon, evening — each with an independent baseline calculated from the last two weeks. This can help track general health and signal illness early via deviation from your personal baseline.
+
+Stopwatch Events
+
+Stopwatch events from the watch appear on the Activities tab. Before syncing events to Health Connect as Exercise Sessions, you can select an exercise type (running, HIIT, football, etc.) for each session, allowing Health Connect to accurately categorize and display your workouts.
