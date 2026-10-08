@@ -31,6 +31,11 @@ MaintainerNotes: |-
   org.lineageos.health is kept for LineageOS builds that ship their own Health Connect.
   The release APK is signed with the upstream key (see AllowedAPKSigningKeys) and the project's
   GitHub Actions workflow is set up for reproducible builds.
+  The RFP bot hostname table flags issuetracker.google.com as "Tracking". This is a false
+  positive: the only occurrences are two bug-report URL strings in the error messages of
+  androidx.datastore:datastore-core (DataStoreImpl, pulled in by datastore-preferences). They are
+  not tracking code, and the app declares no INTERNET permission, so it cannot contact the
+  domain. Exodus Privacy's code-signature analysis reports zero trackers.
 
 AutoUpdateMode: Version
 UpdateCheckMode: Tags
