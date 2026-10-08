@@ -17,6 +17,7 @@ Binaries: https://github.com/hsanjuan/freellee/releases/download/v%v/freellee.ap
 Builds:
   - versionName: 0.0.1
     versionCode: 1
+    commit: f080b10a270d9b02bc43744d6aaac2d8f3054fd1
     subdir: app
     gradle:
       - yes
