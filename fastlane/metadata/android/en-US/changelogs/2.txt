@@ -1,0 +1,1 @@
+Bump to 0.0.2. Pin Gradle wrapper with SHA-256 checksum and regenerate wrapper jar to match declared version.
