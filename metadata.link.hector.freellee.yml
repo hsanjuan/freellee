@@ -21,6 +21,12 @@ Builds:
     subdir: app
     gradle:
       - yes
+  - versionName: 0.0.3
+    versionCode: 3
+    commit: 01af700
+    subdir: app
+    gradle:
+      - yes
 
 AllowedAPKSigningKeys: 7e8869ad1ee13f7bd6065208dd184745b77231406c1eb4748b45be7ddf1cbb06
 
@@ -40,5 +46,5 @@ MaintainerNotes: |-
 AutoUpdateMode: Version
 UpdateCheckMode: Tags
 UpdateCheckData: app/build.gradle.kts|versionCode\s*=\s*(\d+)|.|versionName\s*=\s*"([\d.]+)"
-CurrentVersion: 0.0.2
-CurrentVersionCode: 2
+CurrentVersion: 0.0.3
+CurrentVersionCode: 3
