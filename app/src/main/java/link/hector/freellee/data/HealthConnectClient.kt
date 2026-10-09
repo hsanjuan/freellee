@@ -12,7 +12,6 @@ import androidx.health.connect.client.records.HeartRateRecord
 import androidx.health.connect.client.records.SkinTemperatureRecord
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.permission.HealthPermission
-import androidx.health.connect.client.records.metadata.DataOrigin
 import androidx.health.connect.client.records.metadata.Device
 import androidx.health.connect.client.records.metadata.Metadata
 import androidx.health.connect.client.units.Temperature
@@ -331,7 +330,7 @@ class HealthConnectClient(private val context: Context) {
             // Sort records by tStart to ensure proper delta calculation
             val sortedRecords = records.sortedBy { it.tStart }
 
-            // Compute PER-PERIOD baselines from records up to 23:59 of previous day
+            // Compute PER-GROUP baselines from records strictly before each group's time range
             val zone = ZoneId.systemDefault()
             val today = LocalDate.now(zone)
             val yesterdayEnd = today.minusDays(1).atTime(23, 59, 59).atZone(zone).toInstant()
@@ -343,43 +342,37 @@ class HealthConnectClient(private val context: Context) {
                 return
             }
 
-            // Compute one baseline per period
-            val periodBaselines = Period.values().associateWith { period ->
-                baselineRecords.filter { record ->
-                    val recordPeriod = Period.fromHour(
-                        Instant.ofEpochSecond(record.tStart).atZone(zone).toLocalDateTime().toLocalTime().hour
-                    )
-                    recordPeriod == period
-                }.let { periodRecords ->
-                    if (periodRecords.isEmpty()) {
-                        null
-                    } else {
-                        periodRecords.map { it.value / 100.0 }.average()
-                    }
-                }
-            }
-
-            for ((period, baseline) in periodBaselines) {
-                if (baseline != null) {
-                    Log.d(TAG, "$period baseline: ${"%.2f".format(baseline)}°C from ${baselineRecords.filter {
-                        Period.fromHour(Instant.ofEpochSecond(it.tStart).atZone(zone).toLocalDateTime().toLocalTime().hour) == period
-                    }.size} records")
-                } else {
-                    Log.d(TAG, "$period baseline: no historical data")
-                }
-            }
-
             // Group records into night/day buckets
             val groups = groupTemperatureRecords(sortedRecords)
             Log.d(TAG, "Temperature groups after trimming boundaries: ${groups.size}")
 
             // Create a SkinTemperatureRecord for each group, using the period-specific baseline
             val healthRecords = groups.flatMap { group ->
-                val baseline = periodBaselines[group.period]
+                // Baseline = median of records strictly before this group, for the same period
+                val periodRecords = baselineRecords.filter { record ->
+                    record.tStart < group.tStart &&
+                        Period.fromHour(
+                            Instant.ofEpochSecond(record.tStart)
+                                .atZone(zone).toLocalDateTime().toLocalTime().hour
+                        ) == group.period
+                }
+                val baseline = if (periodRecords.isEmpty()) {
+                    null
+                } else {
+                    val values = periodRecords.map { it.value / 100.0 }.sorted()
+                    val mid = values.size / 2
+                    if (values.size % 2 == 0) {
+                        (values[mid - 1] + values[mid]) / 2.0
+                    } else {
+                        values[mid]
+                    }
+                }
+
                 if (baseline == null) {
-                    Log.w(TAG, "No baseline for ${group.period}, skipping group")
+                    Log.w(TAG, "No baseline for ${group.period} ${group.tStart}, skipping group")
                     emptyList()
                 } else {
+                    Log.d(TAG, "${group.period} baseline: ${"%.2f".format(baseline)}°C from ${periodRecords.size} records")
                     createSkinTemperatureRecord(group, baseline)
                 }
             }
@@ -445,6 +438,7 @@ class HealthConnectClient(private val context: Context) {
         val tEnd: Long,
         val period: Period,
         val readings: List<RecordItem>,
+        val stableId: String,
     )
 
     private fun createSkinTemperatureRecord(
@@ -454,7 +448,7 @@ class HealthConnectClient(private val context: Context) {
         val sorted = group.readings.sortedBy { it.tStart }
         val startInstant = Instant.ofEpochSecond(group.tStart)
         val endInstant = Instant.ofEpochSecond(group.tEnd)
-        val metadata = createMetadata(startInstant, endInstant)
+        val metadata = createMetadata(startInstant, endInstant, group.stableId)
 
         // Calculate deltas as deviation from period baseline
         val deltaValues = mutableListOf<Double>()
@@ -491,12 +485,13 @@ class HealthConnectClient(private val context: Context) {
 
             val bridgeStart = endInstant.minusSeconds(60)
             val bridgeEnd = endInstant.minusSeconds(1)
+            val bridgeId = stableIdForGroup(bridgeStart.epochSecond, bridgeEnd.epochSecond, group.period)
             val bridgeRecord = SkinTemperatureRecord(
                 startTime = bridgeStart,
                 startZoneOffset = null,
                 endTime = bridgeEnd,
                 endZoneOffset = null,
-                metadata = createMetadata(bridgeStart, bridgeEnd),
+                metadata = createMetadata(bridgeStart, bridgeEnd, bridgeId),
                 deltas = listOf(
                     SkinTemperatureRecord.Delta(
                         bridgeStart,
@@ -509,12 +504,13 @@ class HealthConnectClient(private val context: Context) {
 
             val copyStart = endInstant
             val copyEnd = endInstant.plusSeconds(1)
+            val copyId = stableIdForGroup(copyStart.epochSecond, copyEnd.epochSecond, group.period)
             val copyRecord = SkinTemperatureRecord(
                 startTime = copyStart,
                 startZoneOffset = null,
                 endTime = copyEnd,
                 endZoneOffset = null,
-                metadata = createMetadata(copyStart, copyEnd),
+                metadata = createMetadata(copyStart, copyEnd, copyId),
                 deltas = listOf(
                     SkinTemperatureRecord.Delta(
                         copyStart,
@@ -548,11 +544,13 @@ class HealthConnectClient(private val context: Context) {
             .map { (key, records) ->
                 val (date, period) = key
                 val (startInstant, endInstant) = period.getBoundaries(date, zone)
+                val stableId = stableIdForGroup(startInstant.epochSecond, endInstant.epochSecond, period)
                 GroupedTempRecord(
                     tStart = startInstant.epochSecond,
                     tEnd = endInstant.epochSecond,
                     period = period,
                     readings = records,
+                    stableId = stableId,
                 )
             }
             .sortedBy { it.tStart }
@@ -561,30 +559,32 @@ class HealthConnectClient(private val context: Context) {
         return if (allGroups.size > 2) allGroups.drop(1).dropLast(1) else emptyList()
     }
 
-    private fun createMetadata(startTime: Instant, endTime: Instant): Metadata {
-        val metadataClass = Metadata::class.java
-        val constructor = metadataClass.declaredConstructors[0]
-        constructor.isAccessible = true
-        
-        try {
-            val metadata = constructor.newInstance(
-                1,
-                java.util.UUID.randomUUID().toString(),
-                DataOrigin(context.packageName),
-                endTime,
-                null,
-                1L,
-                Device(
-                    type = Device.TYPE_WATCH,
-                    manufacturer = "Ollee Watch",
-                    model = DEFAULT_WATCH_NAME,
-                )
-            ) as Metadata
-            Log.d(TAG, "metadata created: id=${metadata.id}, origin=${metadata.dataOrigin}")
-            return metadata
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to create metadata: ${e.message}", e)
-            throw IllegalStateException("Metadata creation failed", e)
+    /**
+     * Generates a stable client record ID based on the time range and period.
+     * This is used as `clientRecordId` in Metadata for Health Connect deduplication.
+     */
+    private fun stableIdForGroup(tStart: Long, tEnd: Long, period: Period): String {
+        return "$tStart:$tEnd:$period"
+    }
+
+    private fun createMetadata(
+        startTime: Instant,
+        endTime: Instant,
+        clientRecordId: String? = null,
+    ): Metadata {
+        val device = Device(
+            type = Device.TYPE_WATCH,
+            manufacturer = "Ollee Watch",
+            model = DEFAULT_WATCH_NAME,
+        )
+        return if (clientRecordId != null) {
+            Metadata.activelyRecorded(
+                clientRecordId = clientRecordId,
+                clientRecordVersion = 1L,
+                device = device,
+            )
+        } else {
+            Metadata.activelyRecorded(device = device)
         }
     }
 
