@@ -17,7 +17,7 @@ An **unofficial** Android app for [Ollee Watch](https://ollee.com) boards. No in
 
 | Dashboard | Devices (Disconnected) | Devices (Connected) | Activities |
 |---|---|---|---|
-| <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/1.png" width="220" alt="Dashboard"> | <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/2.png" width="220" alt="Devices Disconnected"> | <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/3.png" width="220" alt="Devices Connected"> | <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/4.png" width="220" alt="Activities"> |
+| <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/1.png" width="180" alt="Dashboard"> | <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/2.png" width="180" alt="Devices Disconnected"> | <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/3.png" width="180" alt="Devices Connected"> | <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/4.png" width="180" alt="Activities"> |
 
 ## Requirements
 
