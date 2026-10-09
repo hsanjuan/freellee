@@ -1,0 +1,1 @@
+Improved skin temperature baseline calculation for Health Connect sync.
