@@ -534,4 +534,24 @@ class OlleeViewModel(
     fun clearError() {
         _uiState.value = DashboardUiState.Disconnected
     }
+
+    // ── Detail screen state ──────────────────────────────────────────────
+
+    sealed class DetailScreen {
+        data class Records(
+            val title: String,
+            val records: List<HistoryEntry>,
+        ) : DetailScreen()
+    }
+
+    private val _detailScreen = MutableStateFlow<DetailScreen?>(null)
+    val detailScreen: StateFlow<DetailScreen?> = _detailScreen.asStateFlow()
+
+    fun showRecordsDetail(title: String, records: List<HistoryEntry>) {
+        _detailScreen.value = DetailScreen.Records(title, records)
+    }
+
+    fun dismissDetailScreen() {
+        _detailScreen.value = null
+    }
 }
