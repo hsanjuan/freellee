@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Favorite
@@ -46,6 +47,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import link.hector.freellee.ui.components.WatchStatusIndicator
@@ -58,6 +60,7 @@ import link.hector.freellee.ui.theme.TextTertiary
 import link.hector.freellee.util.formatDuration
 import link.hector.freellee.util.formatTimestamp
 import link.hector.freellee.viewmodel.DashboardUiState
+import link.hector.freellee.viewmodel.HistoryEntry
 import link.hector.freellee.viewmodel.OlleeViewModel
 import java.time.Instant
 
@@ -83,6 +86,17 @@ fun DashboardScreen(
             )
             viewModel.clearError()
         }
+    }
+
+    // Full-screen record detail replaces the dashboard content while open.
+    val detailScreen by viewModel.detailScreen.collectAsStateWithLifecycle()
+    (detailScreen as? OlleeViewModel.DetailScreen.Records)?.let { detail ->
+        RecordDetailScreen(
+            title = detail.title,
+            records = detail.records,
+            onBack = viewModel::dismissDetailScreen,
+        )
+        return
     }
 
     Scaffold(
@@ -143,7 +157,12 @@ fun DashboardScreen(
 
             val dashboardState = uiState as? DashboardUiState.Ready ?: viewModel.lastReadyState
 
-            UnifiedDashboard(dashboardState, isConnected, onConnectClick) {
+            UnifiedDashboard(
+                state = dashboardState,
+                isConnected = isConnected,
+                onConnectClick = onConnectClick,
+                onViewAll = viewModel::showRecordsDetail,
+            ) {
                 WatchStatusIndicator(
                     uiState = uiState,
                     bleState = bleState,
@@ -157,7 +176,13 @@ fun DashboardScreen(
 }
 
 @Composable
-private fun UnifiedDashboard(state: DashboardUiState.Ready?, isConnected: Boolean, onConnectClick: () -> Unit, statusIndicator: @Composable () -> Unit) {
+private fun UnifiedDashboard(
+    state: DashboardUiState.Ready?,
+    isConnected: Boolean,
+    onConnectClick: () -> Unit,
+    onViewAll: (String, List<HistoryEntry>) -> Unit,
+    statusIndicator: @Composable () -> Unit,
+) {
     val dailySteps = state?.steps ?: 0
     val weeklySteps = state?.weeklySteps ?: 0
     val stepIntervals = state?.stepIntervals ?: emptyList()
@@ -166,6 +191,8 @@ private fun UnifiedDashboard(state: DashboardUiState.Ready?, isConnected: Boolea
     val temperatureRecords = state?.temperatureRecords ?: emptyList()
     val counterRecords = state?.counterRecords ?: emptyList()
     val stopwatchRecords = state?.stopwatchRecords ?: emptyList()
+
+    // ── Dashboard content ────────────────────────────────────────────────
 
     LazyColumn(
         modifier = Modifier
@@ -348,14 +375,18 @@ private fun UnifiedDashboard(state: DashboardUiState.Ready?, isConnected: Boolea
             }
         }
 
+        // ── History sections ───────────────────────────────────────────
+
         // Steps history section
         item {
             val expandedSteps = remember { mutableStateOf(false) }
+            val recentSteps = stepIntervals.takeLast(20).reversed()
             ExpandableHistorySection(
                 title = "Steps",
                 count = stepIntervals.size,
                 isExpanded = expandedSteps.value,
                 onToggle = { expandedSteps.value = !expandedSteps.value },
+                onViewAll = { onViewAll("Steps", stepIntervals.map { HistoryEntry(it.steps, it.tStart, it.tEnd, it.syncTimestamp) }) },
             ) {
                 if (stepIntervals.isEmpty()) {
                     Text(
@@ -364,14 +395,19 @@ private fun UnifiedDashboard(state: DashboardUiState.Ready?, isConnected: Boolea
                         color = TextTertiary,
                     )
                 } else {
-                    for (interval in stepIntervals.reversed()) {
-                        val start = formatTimestamp(Instant.ofEpochSecond(interval.tStart))
-                        val end = formatTimestamp(Instant.ofEpochSecond(interval.tEnd))
-                        HistoryEntryRow(
-                            watchRange = "$start -> $end",
-                            syncTime = if (interval.syncTimestamp > 0) formatTimestamp(Instant.ofEpochSecond(interval.syncTimestamp)) else "—",
-                            value = interval.steps.formatNumber(),
-                        )
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        recentSteps.forEach { interval ->
+                            val start = formatTimestamp(Instant.ofEpochSecond(interval.tStart))
+                            val end = formatTimestamp(Instant.ofEpochSecond(interval.tEnd))
+                            HistoryEntryRow(
+                                watchRange = "$start -> $end",
+                                syncTime = if (interval.syncTimestamp > 0) formatTimestamp(Instant.ofEpochSecond(interval.syncTimestamp)) else "—",
+                                value = interval.steps.formatNumber(),
+                            )
+                        }
                     }
                 }
             }
@@ -381,19 +417,26 @@ private fun UnifiedDashboard(state: DashboardUiState.Ready?, isConnected: Boolea
         if (heartRateRecords.isNotEmpty()) {
             item {
                 val expandedHR = remember { mutableStateOf(false) }
+                val recentHR = heartRateRecords.takeLast(20).reversed()
                 ExpandableHistorySection(
                     title = "Heart Rate",
                     count = heartRateRecords.size,
                     isExpanded = expandedHR.value,
                     onToggle = { expandedHR.value = !expandedHR.value },
+                    onViewAll = { onViewAll("Heart Rate", heartRateRecords) },
                 ) {
-                    for (entry in heartRateRecords.reversed()) {
-                        val watchTime = formatTimestamp(Instant.ofEpochSecond(entry.watchTimestampStart))
-                        HistoryEntryRow(
-                            watchRange = watchTime,
-                            syncTime = formatTimestamp(Instant.ofEpochSecond(entry.syncTimestamp)),
-                            value = "${entry.value} bpm",
-                        )
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        recentHR.forEach { entry ->
+                            val watchTime = formatTimestamp(Instant.ofEpochSecond(entry.watchTimestampStart))
+                            HistoryEntryRow(
+                                watchRange = watchTime,
+                                syncTime = formatTimestamp(Instant.ofEpochSecond(entry.syncTimestamp)),
+                                value = "${entry.value} bpm",
+                            )
+                        }
                     }
                 }
             }
@@ -403,20 +446,27 @@ private fun UnifiedDashboard(state: DashboardUiState.Ready?, isConnected: Boolea
         if (temperatureRecords.isNotEmpty()) {
             item {
                 val expandedTemp = remember { mutableStateOf(false) }
+                val recentTemp = temperatureRecords.takeLast(20).reversed()
                 ExpandableHistorySection(
                     title = "Temperature",
                     count = temperatureRecords.size,
                     isExpanded = expandedTemp.value,
                     onToggle = { expandedTemp.value = !expandedTemp.value },
+                    onViewAll = { onViewAll("Temperature", temperatureRecords) },
                 ) {
-                    for (entry in temperatureRecords.reversed()) {
-                        val start = formatTimestamp(Instant.ofEpochSecond(entry.watchTimestampStart))
-                        val end = formatTimestamp(Instant.ofEpochSecond(entry.watchTimestampEnd))
-                        HistoryEntryRow(
-                            watchRange = "$start -> $end",
-                            syncTime = formatTimestamp(Instant.ofEpochSecond(entry.syncTimestamp)),
-                            value = "%.1f°C".format(entry.value / 100.0),
-                        )
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        recentTemp.forEach { entry ->
+                            val start = formatTimestamp(Instant.ofEpochSecond(entry.watchTimestampStart))
+                            val end = formatTimestamp(Instant.ofEpochSecond(entry.watchTimestampEnd))
+                            HistoryEntryRow(
+                                watchRange = "$start -> $end",
+                                syncTime = formatTimestamp(Instant.ofEpochSecond(entry.syncTimestamp)),
+                                value = "%.1f°C".format(entry.value / 100.0),
+                            )
+                        }
                     }
                 }
             }
@@ -426,19 +476,26 @@ private fun UnifiedDashboard(state: DashboardUiState.Ready?, isConnected: Boolea
         if (counterRecords.isNotEmpty()) {
             item {
                 val expandedCounter = remember { mutableStateOf(false) }
+                val recentCounter = counterRecords.takeLast(20).reversed()
                 ExpandableHistorySection(
                     title = "Counter",
                     count = counterRecords.size,
                     isExpanded = expandedCounter.value,
                     onToggle = { expandedCounter.value = !expandedCounter.value },
+                    onViewAll = { onViewAll("Counter", counterRecords) },
                 ) {
-                    for (entry in counterRecords.reversed()) {
-                        val watchTime = formatTimestamp(Instant.ofEpochSecond(entry.watchTimestampStart))
-                        HistoryEntryRow(
-                            watchRange = watchTime,
-                            syncTime = formatTimestamp(Instant.ofEpochSecond(entry.syncTimestamp)),
-                            value = "${entry.value}",
-                        )
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        recentCounter.forEach { entry ->
+                            val watchTime = formatTimestamp(Instant.ofEpochSecond(entry.watchTimestampStart))
+                            HistoryEntryRow(
+                                watchRange = watchTime,
+                                syncTime = formatTimestamp(Instant.ofEpochSecond(entry.syncTimestamp)),
+                                value = "${entry.value}",
+                            )
+                        }
                     }
                 }
             }
@@ -448,20 +505,27 @@ private fun UnifiedDashboard(state: DashboardUiState.Ready?, isConnected: Boolea
         if (stopwatchRecords.isNotEmpty()) {
             item {
                 val expandedStopwatch = remember { mutableStateOf(false) }
+                val recentStopwatch = stopwatchRecords.takeLast(20).reversed()
                 ExpandableHistorySection(
                     title = "Stopwatch",
                     count = stopwatchRecords.size,
                     isExpanded = expandedStopwatch.value,
                     onToggle = { expandedStopwatch.value = !expandedStopwatch.value },
+                    onViewAll = { onViewAll("Stopwatch", stopwatchRecords) },
                 ) {
-                    for (entry in stopwatchRecords.reversed()) {
-                        val start = formatTimestamp(Instant.ofEpochSecond(entry.watchTimestampStart))
-                        val end = formatTimestamp(Instant.ofEpochSecond(entry.watchTimestampEnd))
-                        HistoryEntryRow(
-                            watchRange = "$start -> $end",
-                            syncTime = formatTimestamp(Instant.ofEpochSecond(entry.syncTimestamp)),
-                            value = formatDuration(entry.value),
-                        )
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        recentStopwatch.forEach { entry ->
+                            val start = formatTimestamp(Instant.ofEpochSecond(entry.watchTimestampStart))
+                            val end = formatTimestamp(Instant.ofEpochSecond(entry.watchTimestampEnd))
+                            HistoryEntryRow(
+                                watchRange = "$start -> $end",
+                                syncTime = formatTimestamp(Instant.ofEpochSecond(entry.syncTimestamp)),
+                                value = formatDuration(entry.value),
+                            )
+                        }
                     }
                 }
             }
@@ -475,6 +539,7 @@ private fun ExpandableHistorySection(
     count: Int,
     isExpanded: Boolean,
     onToggle: () -> Unit,
+    onViewAll: () -> Unit,
     content: @Composable () -> Unit,
 ) {
     Card(
@@ -508,6 +573,23 @@ private fun ExpandableHistorySection(
                 HorizontalDivider(color = TextTertiary.copy(alpha = 0.3f), thickness = 1.dp, modifier = Modifier.padding(horizontal = 12.dp))
                 Column(modifier = Modifier.padding(12.dp)) {
                     content()
+                    if (count > 20) {
+                        TextButton(
+                            onClick = onViewAll,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.textButtonColors(contentColor = AccentGreen),
+                        ) {
+                            Text(
+                                "View all $count records",
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                            Icon(
+                                Icons.Default.ChevronRight,
+                                contentDescription = null,
+                                modifier = Modifier.padding(start = 4.dp),
+                            )
+                        }
+                    }
                 }
             }
         }
