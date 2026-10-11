@@ -17,6 +17,7 @@ import androidx.health.connect.client.records.metadata.Metadata
 import androidx.health.connect.client.units.Temperature
 import androidx.health.connect.client.units.TemperatureDelta
 import link.hector.freellee.DEFAULT_WATCH_NAME
+import link.hector.freellee.data.CounterEventWriter
 import link.hector.freellee.data.DeviceStore.RecordItem
 import link.hector.freellee.data.DeviceStore.StepInterval
 import java.time.Instant
@@ -106,6 +107,8 @@ class HealthConnectClient(private val context: Context) {
                 add(HealthPermission.getWritePermission(SkinTemperatureRecord::class))
             }
             add(HealthPermission.getWritePermission(ExerciseSessionRecord::class))
+            // Counter events
+            addAll(CounterEventWriter.counterEventPermissions)
         }
     } catch (e: Exception) {
         Log.w(TAG, "Error computing required permissions", e)
@@ -592,5 +595,41 @@ class HealthConnectClient(private val context: Context) {
         val formatter = DateTimeFormatter.ofPattern("HH:mm")
             .withZone(ZoneId.systemDefault())
         return formatter.format(instant)
+    }
+
+    /**
+     * Writes a counter event to Health Connect.
+     *
+     * Converts the counter event using [CounterEventWriter.convert] and inserts
+     * the resulting record into Health Connect.
+     */
+    suspend fun writeCounterEvent(
+        tStart: Long,
+        value: Int,
+        meaningType: String,
+    ): Boolean {
+        try {
+            val hc = requireClient()
+
+            val record = CounterEventWriter.convert(value, tStart, meaningType)
+                ?: run {
+                    Log.w(TAG, "writeCounterEvent: unknown meaning type $meaningType")
+                    return false
+                }
+
+            // Only the permission for this specific record type is required.
+            val writePermission = HealthPermission.getWritePermission(record::class)
+            if (writePermission !in hc.permissionController.getGrantedPermissions()) {
+                Log.w(TAG, "Counter event write permission not granted ($writePermission) — skipping")
+                return false
+            }
+
+            hc.insertRecords(listOf(record))
+            Log.d(TAG, "Wrote counter event: type=$meaningType, value=$value, tStart=$tStart")
+            return true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to write counter event to Health Connect", e)
+            return false
+        }
     }
 }

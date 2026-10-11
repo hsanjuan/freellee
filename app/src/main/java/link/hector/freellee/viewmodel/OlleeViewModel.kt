@@ -499,6 +499,27 @@ class OlleeViewModel(
                 }
             }
 
+            // Add new counter records as pending counter events
+            val newCounterRecords = counterRecords.filter { it.tStart !in existingCounterKeys }
+            if (newCounterRecords.isNotEmpty()) {
+                Log.d(VM_TAG, "sync: ${newCounterRecords.size} new counter records, creating pending events")
+                for (cr in newCounterRecords) {
+                    if (cr.value > 0) {
+                        val eventId = "ct_${cr.tStart}"
+                        val pendingEvent = DeviceStore.PendingCounterEvent(
+                            id = eventId,
+                            tStart = cr.tStart,
+                            value = cr.value,
+                            syncTime = now,
+                        )
+                        deviceStore.addPendingCounterEvent(pendingEvent)
+                        Log.d(VM_TAG, "sync: added pending counter event: $eventId, value=${cr.value}")
+                    } else {
+                        Log.d(VM_TAG, "sync: counter record has zero value, skipping")
+                    }
+                }
+            }
+
             healthConnectClient.writeSkinTemperatureRecords(mergedTempRecords)
             healthConnectClient.writeHeartRateRecords(heartRateRecords)
 

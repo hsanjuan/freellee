@@ -44,6 +44,8 @@ class DeviceStore(private val context: Context) {
         private val STOPWATCH_RECORDS_KEY = stringPreferencesKey("stopwatch_records")
         private val PENDING_ACTIVITIES_KEY = stringPreferencesKey("pending_activities")
         private val LAST_EXERCISE_TYPE_KEY = intPreferencesKey("last_exercise_type")
+        private val PENDING_COUNTER_EVENTS_KEY = stringPreferencesKey("pending_counter_events")
+        private val LAST_COUNTER_MEANING_KEY = stringPreferencesKey("last_counter_meaning")
         private val LAST_SYNC_TIME_KEY = longPreferencesKey("last_sync_time")
         private const val VOLTAGE_PREFIX = "voltage_"
     }
@@ -437,6 +439,100 @@ class DeviceStore(private val context: Context) {
         Log.d(TAG, "clearPendingActivities")
         context.deviceStore.edit { prefs ->
             prefs.remove(PENDING_ACTIVITIES_KEY)
+        }
+    }
+
+    // -- Last used counter meaning --
+
+    /** Persist the most recently used counter meaning, used for quick swipe-tagging. */
+    suspend fun setLastCounterMeaning(meaningType: String) {
+        context.deviceStore.edit { prefs -> prefs[LAST_COUNTER_MEANING_KEY] = meaningType }
+    }
+
+    /** The most recently used counter meaning, or null if none has been chosen yet. */
+    val lastCounterMeaning: Flow<String?> = context.deviceStore.data
+        .map { prefs -> prefs[LAST_COUNTER_MEANING_KEY] }
+
+    // -- Pending Counter Events --
+
+    data class PendingCounterEvent(
+        val id: String,
+        val tStart: Long,
+        val value: Int,
+        val syncTime: Long = 0L,
+        /** A `CounterEventWriter.MEANING_*` constant, or null if not yet assigned. */
+        val assignedMeaning: String? = null,
+    )
+
+    /** Get all pending counter events, ordered newest first. Deduplicates by ID. */
+    fun getPendingCounterEvents(): Flow<List<PendingCounterEvent>> = preferencesFlow(PENDING_COUNTER_EVENTS_KEY) { json ->
+        Log.d(TAG, "getPendingCounterEvents: json=${json?.take(100)}")
+        parsePendingCounterEvents(json).distinctBy { it.id }.sortedByDescending { it.tStart }
+    }
+
+    /** Add a pending counter event. Skips if ID already exists. */
+    suspend fun addPendingCounterEvent(event: PendingCounterEvent) {
+        Log.d(TAG, "addPendingCounterEvent: id=${event.id}, tStart=${event.tStart}, value=${event.value}")
+        context.deviceStore.edit { prefs ->
+            val existing = parsePendingCounterEvents(prefs[PENDING_COUNTER_EVENTS_KEY])
+
+            // Skip if ID already exists
+            if (existing.any { it.id == event.id }) {
+                Log.d(TAG, "addPendingCounterEvent: skipping duplicate id=${event.id}")
+                return@edit
+            }
+
+            prefs[PENDING_COUNTER_EVENTS_KEY] = pendingCounterEventsToJson(existing + event)
+        }
+    }
+
+    /** Remove a pending counter event by ID. */
+    suspend fun removePendingCounterEvent(id: String) {
+        Log.d(TAG, "removePendingCounterEvent: id=$id")
+        context.deviceStore.edit { prefs ->
+            val existing = parsePendingCounterEvents(prefs[PENDING_COUNTER_EVENTS_KEY])
+            prefs[PENDING_COUNTER_EVENTS_KEY] = pendingCounterEventsToJson(existing.filter { it.id != id })
+        }
+    }
+
+    /** Update an existing pending counter event in place (by ID). */
+    suspend fun updatePendingCounterEvent(event: PendingCounterEvent) {
+        Log.d(TAG, "updatePendingCounterEvent: id=${event.id}")
+        context.deviceStore.edit { prefs ->
+            val existing = parsePendingCounterEvents(prefs[PENDING_COUNTER_EVENTS_KEY])
+            val updated = existing.map { if (it.id == event.id) event else it }
+            prefs[PENDING_COUNTER_EVENTS_KEY] = pendingCounterEventsToJson(updated)
+        }
+    }
+
+    private fun parsePendingCounterEvents(json: String?): List<PendingCounterEvent> {
+        if (json == null) return emptyList()
+        return parseJsonArray(json) { obj ->
+            PendingCounterEvent(
+                id = obj.getString("id"),
+                tStart = obj.getLong("tStart"),
+                value = obj.getInt("value"),
+                syncTime = if (obj.has("syncTime")) obj.getLong("syncTime") else 0L,
+                assignedMeaning = if (obj.has("assignedMeaning")) obj.getString("assignedMeaning") else null,
+            )
+        }
+    }
+
+    private fun pendingCounterEventsToJson(items: List<PendingCounterEvent>): String = listToJson(items) { event, obj ->
+        obj.put("id", event.id)
+        obj.put("tStart", event.tStart)
+        obj.put("value", event.value)
+        obj.put("syncTime", event.syncTime)
+        if (event.assignedMeaning != null) {
+            obj.put("assignedMeaning", event.assignedMeaning)
+        }
+    }
+
+    /** Clear all pending counter events. */
+    suspend fun clearPendingCounterEvents() {
+        Log.d(TAG, "clearPendingCounterEvents")
+        context.deviceStore.edit { prefs ->
+            prefs.remove(PENDING_COUNTER_EVENTS_KEY)
         }
     }
 

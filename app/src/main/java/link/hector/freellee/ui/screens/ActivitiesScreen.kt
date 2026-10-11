@@ -22,9 +22,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FitnessCenter
+import androidx.compose.material.icons.filled.Timer
 import link.hector.freellee.ui.icons.heart_plus
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -56,10 +55,10 @@ import androidx.compose.ui.unit.dp
 import androidx.health.connect.client.records.ExerciseSessionRecord
 import link.hector.freellee.data.DeviceStore
 import link.hector.freellee.data.HealthConnectClient
+import link.hector.freellee.ui.components.RecordCard
 import link.hector.freellee.ui.components.WatchStatusIndicator
 import link.hector.freellee.ui.theme.AccentGreen
 import link.hector.freellee.ui.theme.CardBackground
-import link.hector.freellee.ui.theme.StatusError
 import link.hector.freellee.ui.theme.TextPrimary
 import link.hector.freellee.ui.theme.TextSecondary
 import link.hector.freellee.ui.theme.TextTertiary
@@ -233,8 +232,12 @@ fun ActivitiesScreen(
                         // Order groups: Today, Yesterday, then older dates descending
                         val sortedGroups = LinkedHashMap<LocalDate, List<DeviceStore.PendingActivity>>(
                             grouped.toList().sortedWith(
-                                compareByDescending<Pair<LocalDate, List<DeviceStore.PendingActivity>>> { (date, _) ->
-                                    if (date == today) 0 else if (date == yesterday) 1 else 2
+                                compareBy<Pair<LocalDate, List<DeviceStore.PendingActivity>>> { (date, _) ->
+                                    when (date) {
+                                        today -> 0
+                                        yesterday -> 1
+                                        else -> 2
+                                    }
                                 }.thenByDescending { (date, _) -> date },
                             ).associate { (date, activities) -> date to activities },
                         )
@@ -411,7 +414,7 @@ private fun ActivitySwipeItem(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(16.dp))
                         .background(accent.copy(alpha = 0.15f))
                         .padding(horizontal = 20.dp),
                     contentAlignment = iconAlignment,
@@ -440,80 +443,20 @@ private fun ActivityCard(
     isPendingDelete: Boolean,
     onClick: () -> Unit,
 ) {
-    val startInstant = Instant.ofEpochSecond(activity.tStart)
-    val endInstant = Instant.ofEpochSecond(activity.tEnd)
-    val startFormatted = formatTimeOnly(startInstant)
-    val endFormatted = formatTimeOnly(endInstant)
-    val duration = formatDuration(activity.durationMillis)
+    val startFormatted = formatTimeOnly(Instant.ofEpochSecond(activity.tStart))
+    val endFormatted = formatTimeOnly(Instant.ofEpochSecond(activity.tEnd))
+    val typeInfo = activity.assignedExerciseType?.let { ExerciseTypeInfo.fromType(it) }
 
-    Card(
+    RecordCard(
+        title = typeInfo?.label ?: "Tap to change type",
+        subtitle = "$startFormatted – $endFormatted",
+        leadingIcon = Icons.Default.Timer,
+        leadingEmoji = typeInfo?.icon,
+        trailing = formatDuration(activity.durationMillis),
+        isPendingDelete = isPendingDelete,
         onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isPendingDelete) StatusError.copy(alpha = 0.25f) else CardBackground,
-        ),
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "$startFormatted -> $endFormatted",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = TextPrimary,
-                        fontWeight = FontWeight.Medium,
-                    )
-                    Text(
-                        duration,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary,
-                        modifier = Modifier.padding(top = 2.dp),
-                    )
-                }
-                if (isPendingDelete) {
-                    Text(
-                        text = "Tap to undo",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = TextPrimary,
-                    )
-                } else {
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        // Show assigned type badge if present
-                        activity.assignedExerciseType?.let { type ->
-                            val typeInfo = ExerciseTypeInfo.fromType(type)
-                            if (typeInfo != null) {
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .background(AccentGreen.copy(alpha = 0.15f))
-                                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Row(
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                    ) {
-                                        Text(
-                                            typeInfo.icon,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                        )
-                                        Text(
-                                            typeInfo.label,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = AccentGreen,
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+        accent = AccentGreen,
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
