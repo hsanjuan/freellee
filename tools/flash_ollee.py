@@ -45,6 +45,17 @@ except ImportError as _exc:  # pragma: no cover - depends on environment
     BleakScanner = None  # type: ignore[assignment]
     _BLEAK_IMPORT_ERROR = _exc
 
+import warnings
+
+# bleak's bluez backend warns when MTU hasn't been negotiated yet; this is
+# harmless — the flasher handles MTU gracefully with getattr + if-checks.
+warnings.filterwarnings(
+    "ignore",
+    message="Using default MTU value",
+    category=UserWarning,
+    module="bleak.backends.bluezdbus.client",
+)
+
 
 # ── Image layout constants ──────────────────────────────────────────────────
 
@@ -940,11 +951,9 @@ class OlleeFlasher:
             self.phase = Phase.DONE
             if self.client and self.client.is_connected:
                 self._expect_disconnect = True
-                Log.info("\n[OTA] Cancelling connection — bootloader should reboot...")
+                Log.info("\n[OTA] Cancelling connection...")
                 await self.client.disconnect()
                 self._expect_disconnect = False
-            Log.info("[OTA] Waiting for watch to reboot with new firmware...")
-            await asyncio.sleep(15)
             Log.info("\n[DONE] Flash complete. Watch should be running new firmware.")
             Log.info("[DONE] If the watch doesn't respond after 60s, hard reset by removing/reinserting batteries.")
         except Exception as exc:  # noqa: BLE001
