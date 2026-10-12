@@ -358,7 +358,7 @@ class HealthConnectClient(private val context: Context) {
                             Instant.ofEpochSecond(record.tStart)
                                 .atZone(zone).toLocalDateTime().toLocalTime().hour
                         ) == group.period
-                }
+                }.filter { it.value >= 2500 } // discard readings below 25 °C
                 val baseline = if (periodRecords.isEmpty()) {
                     null
                 } else {
@@ -453,9 +453,11 @@ class HealthConnectClient(private val context: Context) {
         val endInstant = Instant.ofEpochSecond(group.tEnd)
         val metadata = createMetadata(startInstant, endInstant, group.stableId)
 
-        // Calculate deltas as deviation from period baseline
+        // Calculate deltas as deviation from period baseline (skip readings below 25 °C)
         val deltaValues = mutableListOf<Double>()
-        val deltas = sorted.map { record ->
+        val deltas = sorted
+            .filter { it.value >= 2500 }
+            .map { record ->
             val watchTempCelsius = record.value / 100.0
             val deltaCelsius = watchTempCelsius - periodBaseline
             deltaValues.add(deltaCelsius)
