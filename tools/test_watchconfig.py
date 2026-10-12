@@ -569,6 +569,44 @@ class CodecTests(unittest.TestCase):
         with self.assertRaises(codecs.InvalidValue):
             codecs.encode_timeref({"utc_seconds": 0, "lunitidal_interval_minutes": -30})
 
+    def test_bluetooth_safe_mode_is_config_bit_25(self):
+        # the app's "EL Bluetooth Safe Mode"; the 00.01.11 default has it on
+        default = {"features": {}, "light_hold": "hold", "autosleep_period": 5,
+                   "led_rgb": {"red": 0, "green": 0, "blue": 0},
+                   "led_brightness": 0, "hour_format": "toggle", "night_sleep": "off"}
+
+        off = codecs.decode_config(bytes.fromhex("0006542d000000050000ff00030002"))
+        self.assertFalse(off["bluetooth_safe_mode"])
+        self.assertNotIn("unknown_bits", off)           # bit 25 is understood now
+
+        on = codecs.encode_config(dict(default, bluetooth_safe_mode=True))
+        self.assertTrue(int.from_bytes(on[:4], "big") & 0x02000000)
+        self.assertTrue(codecs.decode_config(on)["bluetooth_safe_mode"])
+
+        off2 = codecs.encode_config(dict(default, bluetooth_safe_mode=False))
+        self.assertFalse(int.from_bytes(off2[:4], "big") & 0x02000000)
+
+        # absent -> the 00.01.11 default (on)
+        self.assertTrue(int.from_bytes(codecs.encode_config(default)[:4], "big") & 0x02000000)
+
+    def test_bluetooth_safe_mode_accepts_spellings(self):
+        default = {"features": {}, "light_hold": "hold", "autosleep_period": 5,
+                   "led_rgb": {"red": 0, "green": 0, "blue": 0},
+                   "led_brightness": 0, "hour_format": "toggle", "night_sleep": "off"}
+        for value, expected in (("on", True), ("off", False), (1, True), (0, False),
+                                (True, True), (False, False)):
+            cfg = dict(default, bluetooth_safe_mode=value)
+            got = codecs.decode_config(codecs.encode_config(cfg))["bluetooth_safe_mode"]
+            self.assertEqual(got, expected, value)
+
+    def test_bluetooth_safe_mode_preserved_from_legacy_unknown_bits(self):
+        cfg = {"features": {}, "light_hold": "hold", "autosleep_period": 5,
+               "led_rgb": {"red": 0, "green": 0, "blue": 0},
+               "led_brightness": 0, "hour_format": "toggle",
+               "night_sleep": "off", "unknown_bits": 0x02000000}
+        self.assertTrue(
+            codecs.decode_config(codecs.encode_config(cfg))["bluetooth_safe_mode"])
+
 
 class EndToEndTests(unittest.TestCase):
     """Read every section from canned default replies, then write them back."""
@@ -684,6 +722,8 @@ class ValidationTests(unittest.TestCase):
             codecs.encode_config(self._config(led_rgb={"red": 256}))
         with self.assertRaises(codecs.InvalidValue):
             codecs.encode_config(self._config(features={"no_such_feature": True}))
+        with self.assertRaises(codecs.InvalidValue):
+            codecs.encode_config(self._config(bluetooth_safe_mode="apple"))
 
     def test_alarm_values_are_rejected(self):
         alarm = codecs.decode_alarm(b"\x05" + bytes(7) + b"\x00" * 4 + bytes(20))

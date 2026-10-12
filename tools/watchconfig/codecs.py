@@ -532,7 +532,17 @@ FEATURE_BITS: dict[int, tuple[str, str]] = {
 }
 LIGHT_HOLD_SHIFT = 7
 LIGHT_HOLD_BITS = 0x7          # 3-bit field
-_KNOWN_MASK = sum(1 << b for b in FEATURE_BITS) | (LIGHT_HOLD_BITS << LIGHT_HOLD_SHIFT)
+
+# Feature bit 25.  The app exposes it as "EL Bluetooth Safe Mode" and it only
+# applies to OlleeEl hardware: when set, the backlight is disabled while the
+# watch is connected to the phone; when clear the backlight may be turned on at
+# any time, at the risk of interrupting Bluetooth.  The 00.01.11 firmware
+# defaults it on; the OlleeOne builds ignore it.
+BLUETOOTH_SAFE_MODE_BIT = 25
+
+_KNOWN_MASK = (sum(1 << b for b in FEATURE_BITS)
+               | (LIGHT_HOLD_BITS << LIGHT_HOLD_SHIFT)
+               | (1 << BLUETOOTH_SAFE_MODE_BIT))
 
 # Option tables.  These are the values written in the corresponding field.
 LED_BRIGHTNESS_OPTIONS = ["Max", "Level 7", "Level 6", "Level 5", "Level 4",
@@ -609,6 +619,7 @@ def decode_config(payload: bytes) -> dict[str, Any]:
     config = {
         "features": features,
         "light_hold": LIGHT_HOLD_VALUES[(mask >> LIGHT_HOLD_SHIFT) & LIGHT_HOLD_BITS],
+        "bluetooth_safe_mode": bool((mask >> BLUETOOTH_SAFE_MODE_BIT) & 1),
         "autosleep_period": autosleep,           # seconds
         "led_rgb": dict(
             {"red": (led >> 16) & 0xFF,
@@ -704,6 +715,20 @@ def _light_hold_index(value: Any) -> int:
     return LIGHT_HOLD_VALUES.index(number)
 
 
+def _bool_value(value: Any, field: str) -> bool:
+    """Accept YAML booleans and the usual true/false spellings."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    text = str(value).strip().lower()
+    if text in ("true", "yes", "on", "1"):
+        return True
+    if text in ("false", "no", "off", "0"):
+        return False
+    raise InvalidValue(f"{field}: expected true or false, got {value!r}")
+
+
 def encode_config(value: Any) -> bytes:
     mask = int(value.get("unknown_bits", 0)) & ~_KNOWN_MASK
     for key, enabled in (value.get("features") or {}).items():
@@ -715,6 +740,15 @@ def encode_config(value: Any) -> bytes:
         else:
             raise InvalidValue(f"config.features.{key}: unknown feature name")
     mask |= _light_hold_index(value.get("light_hold", "hold")) << LIGHT_HOLD_SHIFT
+    if "bluetooth_safe_mode" in value:
+        safe = _bool_value(value["bluetooth_safe_mode"], "config.bluetooth_safe_mode")
+    elif int(value.get("unknown_bits", 0)) & (1 << BLUETOOTH_SAFE_MODE_BIT):
+        # an older file recorded the bit as unknown - keep it set
+        safe = True
+    else:
+        safe = True          # the 00.01.11 firmware defaults the setting on
+    if safe:
+        mask |= 1 << BLUETOOTH_SAFE_MODE_BIT
     autosleep = _int_value(value.get("autosleep_period", 5), "config.autosleep_period",
                            0, 0xFFFFFFFF, choices=set(AUTOSLEEP_OPTIONS))
     brightness = _encode_brightness(value.get("led_brightness", 0))

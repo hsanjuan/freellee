@@ -68,6 +68,10 @@ FIELD_HELP: dict[str, str] = {
     "config.light_hold": ("What a long press of the LIGHT button does - one of "
                           f"{_opt(codecs.LIGHT_HOLD_VALUES)} "
                           "('hold' keeps the light on while held; the numbers are seconds)"),
+    "config.bluetooth_safe_mode": ("EL Bluetooth Safe Mode (OlleeEl watches only). When on, "
+                               "the backlight is disabled while the watch is connected to "
+                               "the phone; turn it off to allow the backlight any time, "
+                               "which may interrupt Bluetooth."),
     "config.autosleep_period": ("How long to wait before auto sleep turns the screen off, "
                                 f"in seconds - one of {sorted(codecs.AUTOSLEEP_OPTIONS)}"),
     "config.led_rgb": "Backlight colour as red/green/blue, each 0-255",

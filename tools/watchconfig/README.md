@@ -102,8 +102,10 @@ databank: ...       # 10 entries {tag, text}
 
 Enum-valued settings accept their labels (`led_brightness: Level 5`,
 `hour_format: 24H`, `night_sleep: '01:00'`, `light_hold: 2 seconds`) or a raw
-integer. Every field carries a `#` comment naming it and listing its valid
-values, so the file is self-documenting — guidance is never stored as data.
+integer. `bluetooth_safe_mode` is the "EL Bluetooth Safe Mode" setting (it only
+applies to OlleeEl watches). Every field carries a `#` comment naming it and
+listing its valid values, so the file is self-documenting — guidance is never
+stored as data.
 
 ## Validation
 
