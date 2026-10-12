@@ -212,8 +212,8 @@ private fun MainTabs(
 ) {
     val tabs = listOf(
         "Data" to Icons.Default.Insights,
-        "Counters" to Icons.Default.Numbers,
         "Activities" to Icons.AutoMirrored.Filled.DirectionsRun,
+        "Counters" to Icons.Default.Numbers,
         "Devices" to Icons.Default.Watch,
     )
     val pagerState = rememberPagerState(pageCount = { tabs.size })
@@ -260,13 +260,13 @@ private fun MainTabs(
                         onConnectClick = onConnectClick,
                         onSync = onSync,
                     )
-                    1 -> CounterEventsScreen(
+                    1 -> ActivitiesScreen(
                         deviceStore = deviceStore,
                         healthConnectClient = healthConnectClient,
                         onSync = onSync,
                         viewModel = olleeViewModel,
                     )
-                    2 -> ActivitiesScreen(
+                    2 -> CounterEventsScreen(
                         deviceStore = deviceStore,
                         healthConnectClient = healthConnectClient,
                         onSync = onSync,
