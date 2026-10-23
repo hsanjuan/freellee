@@ -417,10 +417,10 @@ class HealthConnectClient(private val context: Context) {
                 EVENING -> date.atTime(18, 0).atZone(zone).toInstant()
             }
             val end = when (this) {
-                NIGHT -> date.atTime(6, 0).atZone(zone).toInstant()
-                MORNING -> date.atTime(12, 0).atZone(zone).toInstant()
-                AFTERNOON -> date.atTime(18, 0).atZone(zone).toInstant()
-                EVENING -> date.plusDays(1).atTime(0, 0).atZone(zone).toInstant()
+                NIGHT -> date.atTime(5, 59, 59).atZone(zone).toInstant()
+                MORNING -> date.atTime(11, 59, 59).atZone(zone).toInstant()
+                AFTERNOON -> date.atTime(17, 59, 59).atZone(zone).toInstant()
+                EVENING -> date.atTime(23, 59, 59).atZone(zone).toInstant()
             }
             return start to end
         }
@@ -482,52 +482,6 @@ class HealthConnectClient(private val context: Context) {
             baseline = Temperature.celsius(periodBaseline),
             measurementLocation = SkinTemperatureRecord.MEASUREMENT_LOCATION_WRIST
         )
-
-        // For evening groups, add bridge and copy records for smooth graph transition
-        if (group.period == Period.EVENING) {
-            val avgDelta = deltaValues.average()
-            Log.d(TAG, "Evening→Night bridge: avgDelta=$avgDelta°C, tEnd=${formatTime(endInstant)}")
-
-            val bridgeStart = endInstant.minusSeconds(60)
-            val bridgeEnd = endInstant.minusSeconds(1)
-            val bridgeId = stableIdForGroup(bridgeStart.epochSecond, bridgeEnd.epochSecond, group.period)
-            val bridgeRecord = SkinTemperatureRecord(
-                startTime = bridgeStart,
-                startZoneOffset = null,
-                endTime = bridgeEnd,
-                endZoneOffset = null,
-                metadata = createMetadata(bridgeStart, bridgeEnd, bridgeId),
-                deltas = listOf(
-                    SkinTemperatureRecord.Delta(
-                        bridgeStart,
-                        TemperatureDelta.celsius(avgDelta)
-                    )
-                ),
-                baseline = Temperature.celsius(periodBaseline),
-                measurementLocation = SkinTemperatureRecord.MEASUREMENT_LOCATION_WRIST
-            )
-
-            val copyStart = endInstant
-            val copyEnd = endInstant.plusSeconds(1)
-            val copyId = stableIdForGroup(copyStart.epochSecond, copyEnd.epochSecond, group.period)
-            val copyRecord = SkinTemperatureRecord(
-                startTime = copyStart,
-                startZoneOffset = null,
-                endTime = copyEnd,
-                endZoneOffset = null,
-                metadata = createMetadata(copyStart, copyEnd, copyId),
-                deltas = listOf(
-                    SkinTemperatureRecord.Delta(
-                        copyStart,
-                        TemperatureDelta.celsius(avgDelta)
-                    )
-                ),
-                baseline = Temperature.celsius(periodBaseline),
-                measurementLocation = SkinTemperatureRecord.MEASUREMENT_LOCATION_WRIST
-            )
-
-            return listOf(mainRecord, bridgeRecord, copyRecord)
-        }
 
         return listOf(mainRecord)
     }
