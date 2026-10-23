@@ -135,7 +135,12 @@ class DeviceStore(private val context: Context) {
         }
     }
 
-    /** Persist temperature, heart rate, counter, and stopwatch records for the active device. */
+    /** Persist temperature, heart rate, counter, and stopwatch records for the active device.
+     *
+     * The caller (ViewModel) has already performed the merge with existing records and applied
+     * any age-based pruning (e.g. 15-day cutoff). This function simply deduplicates and stores
+     * the final list as-is.
+     */
     suspend fun saveRecentRecords(
         temperature: List<RecordItem>,
         heartRate: List<RecordItem>,
@@ -148,17 +153,7 @@ class DeviceStore(private val context: Context) {
         val uniqueStopwatch = stopwatch.distinctBy { it.tStart }
 
         context.deviceStore.edit { prefs ->
-            val existingTempRecords = parseRecordItems(prefs[TEMP_RECORDS_KEY])
-            val existingHrRecords = parseRecordItems(prefs[HR_RECORDS_KEY])
-            val existingCounterRecords = parseRecordItems(prefs[COUNTER_RECORDS_KEY])
-            val existingStopwatchRecords = parseRecordItems(prefs[STOPWATCH_RECORDS_KEY])
-
-            val mergedTemp = existingTempRecords.mergeWith(uniqueTemp)
-            val mergedHr = existingHrRecords.mergeWith(uniqueHr)
-            val mergedCounter = existingCounterRecords.mergeWith(uniqueCounter)
-            val mergedStopwatch = existingStopwatchRecords.mergeWith(uniqueStopwatch)
-
-            Log.d(TAG, "saveRecentRecords: temp ${existingTempRecords.size} + ${uniqueTemp.size} -> ${mergedTemp.size}, hr ${existingHrRecords.size} + ${uniqueHr.size} -> ${mergedHr.size}, counter ${existingCounterRecords.size} + ${uniqueCounter.size} -> ${mergedCounter.size}, stopwatch ${existingStopwatchRecords.size} + ${uniqueStopwatch.size} -> ${mergedStopwatch.size}")
+            Log.d(TAG, "saveRecentRecords: temp ${uniqueTemp.size}, hr ${uniqueHr.size}, counter ${uniqueCounter.size}, stopwatch ${uniqueStopwatch.size}")
             if (uniqueCounter.isNotEmpty()) {
                 Log.d(TAG, "saveRecentRecords: counter items: ${uniqueCounter.map { "type=${it.type} tStart=${it.tStart} value=${it.value}" }}")
             }
@@ -166,17 +161,11 @@ class DeviceStore(private val context: Context) {
                 Log.d(TAG, "saveRecentRecords: stopwatch items: ${uniqueStopwatch.map { "type=${it.type} tStart=${it.tStart} tEnd=${it.tEnd} value=${it.value}" }}")
             }
 
-            prefs[TEMP_RECORDS_KEY] = recordsToJson(mergedTemp)
-            prefs[HR_RECORDS_KEY] = recordsToJson(mergedHr)
-            prefs[COUNTER_RECORDS_KEY] = recordsToJson(mergedCounter)
-            prefs[STOPWATCH_RECORDS_KEY] = recordsToJson(mergedStopwatch)
+            prefs[TEMP_RECORDS_KEY] = recordsToJson(uniqueTemp)
+            prefs[HR_RECORDS_KEY] = recordsToJson(uniqueHr)
+            prefs[COUNTER_RECORDS_KEY] = recordsToJson(uniqueCounter)
+            prefs[STOPWATCH_RECORDS_KEY] = recordsToJson(uniqueStopwatch)
         }
-    }
-
-    /** Keep [this] records and append [incoming] ones whose start time is not already present. */
-    private fun List<RecordItem>.mergeWith(incoming: List<RecordItem>): List<RecordItem> {
-        val existingKeys = map { it.tStart }.toSet()
-        return this + incoming.filter { it.tStart !in existingKeys }
     }
 
     private fun recordsToJson(items: List<RecordItem>): String = listToJson(items) { item, obj ->
