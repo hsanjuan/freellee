@@ -333,7 +333,8 @@ class HealthConnectClient(private val context: Context) {
             // Sort records by tStart to ensure proper delta calculation
             val sortedRecords = records.sortedBy { it.tStart }
 
-            // Compute PER-GROUP baselines from records strictly before each group's time range
+            // Compute PER-GROUP baselines from records strictly before each group's time range.
+            // Use local time consistently so baseline period matching aligns with grouping.
             val zone = ZoneId.systemDefault()
             val today = LocalDate.now(zone)
             val yesterdayEnd = today.minusDays(1).atTime(23, 59, 59).atZone(zone).toInstant()
@@ -489,6 +490,9 @@ class HealthConnectClient(private val context: Context) {
     private fun groupTemperatureRecords(
         sortedRecords: List<RecordItem>,
     ): List<GroupedTempRecord> {
+        // Group by local time so periods align with the user's midnight.
+        // stableId uses local date + period (not UTC timestamps), so it stays
+        // consistent as long as the device timezone doesn't change.
         val zone = ZoneId.systemDefault()
 
         val allGroups = sortedRecords
@@ -503,7 +507,7 @@ class HealthConnectClient(private val context: Context) {
             .map { (key, records) ->
                 val (date, period) = key
                 val (startInstant, endInstant) = period.getBoundaries(date, zone)
-                val stableId = stableIdForGroup(startInstant.epochSecond, endInstant.epochSecond, period)
+                val stableId = stableIdForGroup(date, period)
                 GroupedTempRecord(
                     tStart = startInstant.epochSecond,
                     tEnd = endInstant.epochSecond,
@@ -519,11 +523,17 @@ class HealthConnectClient(private val context: Context) {
     }
 
     /**
-     * Generates a stable client record ID based on the time range and period.
+     * Generates a stable client record ID based on the local date and period.
      * This is used as `clientRecordId` in Metadata for Health Connect deduplication.
+     *
+     * Using local date + period (not UTC timestamps) means the stableId is
+     * deterministic as long as the device timezone doesn't change. If the
+     * timezone does change, a new stableId is generated — this creates
+     * temporary duplicate Health Connect records for the old period, which
+     * are cleaned up by the 15-day cutoff on the next sync.
      */
-    private fun stableIdForGroup(tStart: Long, tEnd: Long, period: Period): String {
-        return "$tStart:$tEnd:$period"
+    private fun stableIdForGroup(date: LocalDate, period: Period): String {
+        return "$date:$period"
     }
 
     private fun createMetadata(
