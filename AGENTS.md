@@ -27,6 +27,7 @@ Top-level files: `FreelleeApp.kt` (DI), `Constants.kt` (BLE timeouts, defaults),
 ## Key Directives
 
 - **Never push without explicit permission** — commits are fine; pushes require approval.
+- **If a push fails, stop and wait for user approval before retrying** — do not attempt workarounds (e.g. switching to HTTPS, changing remotes, force-pushing).
 - **Treat warnings as errors** — fix the root cause, don't silence them without permission.
 
 ## Release Procedure
