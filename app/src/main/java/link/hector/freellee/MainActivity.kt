@@ -21,15 +21,16 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.DirectionsRun
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.Numbers
 import androidx.compose.material.icons.filled.Watch
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -47,6 +48,7 @@ import link.hector.freellee.ui.screens.ActivitiesScreen
 import link.hector.freellee.ui.screens.ConnectionScreen
 import link.hector.freellee.ui.screens.CounterEventsScreen
 import link.hector.freellee.ui.screens.DashboardScreen
+import link.hector.freellee.ui.screens.HistoryScreen
 import link.hector.freellee.ui.screens.PermissionBanner
 import link.hector.freellee.ui.screens.PermissionsOnboardingScreen
 import link.hector.freellee.ui.theme.FreelleeTheme
@@ -93,7 +95,6 @@ class MainActivity : ComponentActivity() {
                     permissionsViewModel = permissionsViewModel,
                     healthConnectClient = healthConnectClient,
                     deviceStore = deviceStore,
-                    onConnectClick = { olleeViewModel.sync() },
                     onSync = { olleeViewModel.sync() },
                 )
             }
@@ -114,7 +115,6 @@ fun MainContent(
     permissionsViewModel: PermissionsViewModel,
     healthConnectClient: HealthConnectClient,
     deviceStore: DeviceStore,
-    onConnectClick: () -> Unit,
     onSync: () -> Unit,
 ) {
     val permissions by permissionsViewModel.uiState.collectAsState()
@@ -187,7 +187,6 @@ fun MainContent(
                 healthConnectClient = healthConnectClient,
                 deviceStore = deviceStore,
                 permissions = permissions,
-                onConnectClick = onConnectClick,
                 onSync = onSync,
                 onRequestBluetooth = requestBluetooth,
                 onOpenAppSettings = openAppSettings,
@@ -204,7 +203,6 @@ private fun MainTabs(
     healthConnectClient: HealthConnectClient,
     deviceStore: DeviceStore,
     permissions: PermissionsUiState,
-    onConnectClick: () -> Unit,
     onSync: () -> Unit,
     onRequestBluetooth: () -> Unit,
     onOpenAppSettings: () -> Unit,
@@ -212,6 +210,7 @@ private fun MainTabs(
 ) {
     val tabs = listOf(
         "Data" to Icons.Default.Insights,
+        "History" to Icons.Default.History,
         "Activities" to Icons.AutoMirrored.Filled.DirectionsRun,
         "Counters" to Icons.Default.Numbers,
         "Devices" to Icons.Default.Watch,
@@ -219,18 +218,12 @@ private fun MainTabs(
     val pagerState = rememberPagerState(pageCount = { tabs.size })
     val coroutineScope = rememberCoroutineScope()
 
-    Scaffold(modifier = Modifier.fillMaxSize()) { paddingValues ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues),
-        ) {
-            PrimaryTabRow(
-                selectedTabIndex = pagerState.currentPage,
-                divider = {},
-            ) {
+    Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        bottomBar = {
+            NavigationBar {
                 tabs.forEachIndexed { index, (title, icon) ->
-                    Tab(
+                    NavigationBarItem(
                         selected = pagerState.currentPage == index,
                         onClick = {
                             coroutineScope.launch {
@@ -238,11 +231,17 @@ private fun MainTabs(
                             }
                         },
                         icon = { Icon(icon, contentDescription = title) },
-                        text = { Text(title) },
+                        label = { Text(title) },
                     )
                 }
             }
-
+        },
+    ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues),
+        ) {
             PermissionBanner(
                 state = permissions,
                 onRequestBluetooth = onRequestBluetooth,
@@ -257,22 +256,25 @@ private fun MainTabs(
                 when (page) {
                     0 -> DashboardScreen(
                         viewModel = olleeViewModel,
-                        onConnectClick = onConnectClick,
                         onSync = onSync,
                     )
-                    1 -> ActivitiesScreen(
+                    1 -> HistoryScreen(
+                        viewModel = olleeViewModel,
+                        onSync = onSync,
+                    )
+                    2 -> ActivitiesScreen(
                         deviceStore = deviceStore,
                         healthConnectClient = healthConnectClient,
                         onSync = onSync,
                         viewModel = olleeViewModel,
                     )
-                    2 -> CounterEventsScreen(
+                    3 -> CounterEventsScreen(
                         deviceStore = deviceStore,
                         healthConnectClient = healthConnectClient,
                         onSync = onSync,
                         viewModel = olleeViewModel,
                     )
-                    3 -> ConnectionScreen(
+                    4 -> ConnectionScreen(
                         viewModel = deviceViewModel,
                         onConnectClick = { address -> deviceViewModel.connect(address) },
                         onDisconnect = { deviceViewModel.disconnect() },

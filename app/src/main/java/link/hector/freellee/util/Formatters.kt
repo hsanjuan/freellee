@@ -18,6 +18,33 @@ fun formatDuration(millis: Int): String {
 fun formatTimeOnly(instant: Instant): String =
     DateTimeFormatter.ofPattern("HH:mm:ss").format(instant.atZone(ZoneId.systemDefault()))
 
+/** Formats a time range as `From HH:mm to HH:mm`, e.g. for a step interval. */
+fun formatClockRange(start: Instant, end: Instant): String {
+    val timeFmt = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault())
+    return "From ${timeFmt.format(start)} to ${timeFmt.format(end)}"
+}
+
+/**
+ * Formats an interval as `Today from HH:mm to HH:mm`, falling back to `Yesterday` or a
+ * short date for older intervals.
+ */
+fun formatIntervalRange(
+    start: Instant,
+    end: Instant,
+    today: LocalDate = LocalDate.now(),
+): String {
+    val zone = ZoneId.systemDefault()
+    val startLocal = start.atZone(zone)
+    val endLocal = end.atZone(zone)
+    val day = when (startLocal.toLocalDate()) {
+        today -> "Today"
+        today.minusDays(1) -> "Yesterday"
+        else -> DateTimeFormatter.ofPattern("MMM d").format(startLocal)
+    }
+    val timeFmt = DateTimeFormatter.ofPattern("HH:mm")
+    return "$day from ${timeFmt.format(startLocal)} to ${timeFmt.format(endLocal)}"
+}
+
 /**
  * Formats an instant for history rows: `Today at HH:mm:ss`, `Yesterday at HH:mm:ss`, otherwise
  * `MMM d, HH:mm:ss`.

@@ -23,9 +23,6 @@ import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
-import java.time.temporal.ChronoUnit
-import java.time.temporal.WeekFields
-import java.util.Locale
 import link.hector.freellee.BLE_CONNECT_TIMEOUT_MS
 import link.hector.freellee.DEFAULT_WATCH_NAME
 import link.hector.freellee.data.DeviceStore
@@ -159,8 +156,8 @@ class OlleeViewModel(
             if (devices.isEmpty()) {
                 val allIntervals = deviceStore.getAllStepIntervalsAcrossDevices().first()
                 Log.d(VM_TAG, "loadCachedData(no active device): read ${allIntervals.size} step intervals from store")
-                val weekStartEpoch = weekStartEpoch(LocalDate.now())
-                val weeklySteps = allIntervals.filter { it.tStart >= weekStartEpoch }.sumOf { it.steps }
+                val rollingStart = rollingWindowStartEpoch(Instant.now().epochSecond)
+                val weeklySteps = allIntervals.filter { it.tStart >= rollingStart }.sumOf { it.steps }
                 Log.d(VM_TAG, "loadCachedData(no active device): weeklySteps=$weeklySteps from ${allIntervals.size} intervals")
 
                 if (allIntervals.isNotEmpty() || tempRecords.isNotEmpty() || hrRecords.isNotEmpty() || counterRecords.isNotEmpty() || stopwatchRecords.isNotEmpty()) {
@@ -205,8 +202,8 @@ class OlleeViewModel(
         val todayIntervals = intervals.filter { it.tStart >= todayStart }
         Log.d(VM_TAG, "loadDeviceState: todayIntervals=${todayIntervals.size} (filtered from ${intervals.size})")
         val dailySteps = todayIntervals.sumOf { it.steps }
-        val weekStartEpoch = weekStartEpoch(LocalDate.now())
-        val weeklySteps = intervals.filter { it.tStart >= weekStartEpoch }.sumOf { it.steps }
+        val rollingStart = rollingWindowStartEpoch(Instant.now().epochSecond)
+        val weeklySteps = intervals.filter { it.tStart >= rollingStart }.sumOf { it.steps }
 
         Log.d(VM_TAG, "loadDeviceState: mac=$macAddress, dailySteps=$dailySteps, weeklySteps=$weeklySteps (from ${intervals.size} total, ${todayIntervals.size} today)")
         Log.d(VM_TAG, "loadDeviceState: counterRecords=${counterRecs.size}, stopwatchRecords=${stopwatchRecs.size}")
@@ -235,8 +232,8 @@ class OlleeViewModel(
     ) {
         val allIntervals = deviceStore.getAllStepIntervalsAcrossDevices().first()
         Log.d(VM_TAG, "loadNoDeviceState: read ${allIntervals.size} step intervals from store")
-        val weekStartEpoch = weekStartEpoch(LocalDate.now())
-        val weeklySteps = allIntervals.filter { it.tStart >= weekStartEpoch }.sumOf { it.steps }
+        val rollingStart = rollingWindowStartEpoch(Instant.now().epochSecond)
+        val weeklySteps = allIntervals.filter { it.tStart >= rollingStart }.sumOf { it.steps }
 
         if (allIntervals.isNotEmpty() || tempRecords.isNotEmpty() || hrRecords.isNotEmpty() || counterRecs.isNotEmpty() || stopwatchRecs.isNotEmpty()) {
             val readyState = DashboardUiState.Ready(
@@ -253,14 +250,6 @@ class OlleeViewModel(
             lastReadyState = readyState
             _uiState.value = readyState
         }
-    }
-
-    private fun weekStartEpoch(today: LocalDate): Long {
-        val weekFields = WeekFields.of(Locale.getDefault())
-        val dayOfWeekInWeekFields = weekFields.dayOfWeek().getFrom(today)
-        val daysSinceWeekStart = dayOfWeekInWeekFields - 1
-        val weekStart = today.minus(daysSinceWeekStart, ChronoUnit.DAYS)
-        return weekStart.atStartOfDay(ZoneId.systemDefault()).toEpochSecond()
     }
 
     fun sync(address: String? = null) = viewModelScope.launch(Dispatchers.IO) {
@@ -413,8 +402,8 @@ class OlleeViewModel(
             val dailyStepsFromStorage = allIntervals.filter { it.tStart >= todayStart }.sumOf { it.steps }
             Log.d(VM_TAG, "sync: dailyStepsFromStorage=$dailyStepsFromStorage from ${allIntervals.size} total")
 
-            val weekStartEpoch = weekStartEpoch(today)
-            val weeklyStepsFromStorage = allIntervals.filter { it.tStart >= weekStartEpoch }.sumOf { it.steps }
+            val rollingStart = rollingWindowStartEpoch(now)
+            val weeklyStepsFromStorage = allIntervals.filter { it.tStart >= rollingStart }.sumOf { it.steps }
 
             val rawTemperatureRecords = allRecords.filter { it.type == ActivityType.TEMPERATURE }
             val rawHeartRateRecords = allRecords.filter { it.type == ActivityType.HEART_RATE }

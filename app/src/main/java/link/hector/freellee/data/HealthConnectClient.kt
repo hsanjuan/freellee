@@ -353,30 +353,18 @@ class HealthConnectClient(private val context: Context) {
             // Create a SkinTemperatureRecord for each group, using the period-specific baseline
             val healthRecords = groups.flatMap { group ->
                 // Baseline = median of records strictly before this group, for the same period
-                val periodRecords = baselineRecords.filter { record ->
-                    record.tStart < group.tStart &&
-                        Period.fromHour(
-                            Instant.ofEpochSecond(record.tStart)
-                                .atZone(zone).toLocalDateTime().toLocalTime().hour
-                        ) == group.period
-                }.filter { it.value >= 2500 } // discard readings below 25 °C
-                val baseline = if (periodRecords.isEmpty()) {
-                    null
-                } else {
-                    val values = periodRecords.map { it.value / 100.0 }.sorted()
-                    val mid = values.size / 2
-                    if (values.size % 2 == 0) {
-                        (values[mid - 1] + values[mid]) / 2.0
-                    } else {
-                        values[mid]
-                    }
-                }
+                val baseline = periodBaseline(
+                    records = baselineRecords,
+                    period = group.period,
+                    beforeEpochSecond = group.tStart,
+                    zone = zone,
+                )
 
                 if (baseline == null) {
                     Log.w(TAG, "No baseline for ${group.period} ${group.tStart}, skipping group")
                     emptyList()
                 } else {
-                    Log.d(TAG, "${group.period} baseline: ${"%.2f".format(baseline)}°C from ${periodRecords.size} records")
+                    Log.d(TAG, "${group.period} baseline: ${"%.2f".format(baseline)}°C")
                     createSkinTemperatureRecord(group, baseline)
                 }
             }
@@ -407,40 +395,10 @@ class HealthConnectClient(private val context: Context) {
     }
 
 
-    enum class Period(val order: Int) {
-        NIGHT(0), MORNING(1), AFTERNOON(2), EVENING(3);
-
-        fun getBoundaries(date: LocalDate, zone: ZoneId): Pair<Instant, Instant> {
-            val start = when (this) {
-                NIGHT -> date.atTime(0, 0).atZone(zone).toInstant()
-                MORNING -> date.atTime(6, 0).atZone(zone).toInstant()
-                AFTERNOON -> date.atTime(12, 0).atZone(zone).toInstant()
-                EVENING -> date.atTime(18, 0).atZone(zone).toInstant()
-            }
-            val end = when (this) {
-                NIGHT -> date.atTime(5, 59, 59).atZone(zone).toInstant()
-                MORNING -> date.atTime(11, 59, 59).atZone(zone).toInstant()
-                AFTERNOON -> date.atTime(17, 59, 59).atZone(zone).toInstant()
-                EVENING -> date.atTime(23, 59, 59).atZone(zone).toInstant()
-            }
-            return start to end
-        }
-
-        companion object {
-            fun fromHour(hour: Int): Period = when (hour) {
-                in 0..5 -> NIGHT
-                in 6..11 -> MORNING
-                in 12..17 -> AFTERNOON
-                in 18..23 -> EVENING
-                else -> throw IllegalArgumentException("Invalid hour: $hour")
-            }
-        }
-    }
-
     data class GroupedTempRecord(
         val tStart: Long,
         val tEnd: Long,
-        val period: Period,
+        val period: TemperaturePeriod,
         val readings: List<RecordItem>,
         val stableId: String,
     )
@@ -457,7 +415,7 @@ class HealthConnectClient(private val context: Context) {
         // Calculate deltas as deviation from period baseline (skip readings below 25 °C)
         val deltaValues = mutableListOf<Double>()
         val deltas = sorted
-            .filter { it.value >= 2500 }
+            .filter { it.value >= MIN_VALID_TEMPERATURE }
             .map { record ->
             val watchTempCelsius = record.value / 100.0
             val deltaCelsius = watchTempCelsius - periodBaseline
@@ -501,7 +459,7 @@ class HealthConnectClient(private val context: Context) {
                     .atZone(zone).toLocalDateTime()
                 val date = localDateTime.toLocalDate()
                 val hour = localDateTime.toLocalTime().hour
-                val period = Period.fromHour(hour)
+                val period = TemperaturePeriod.fromHour(hour)
                 date to period
             }
             .map { (key, records) ->
@@ -532,7 +490,7 @@ class HealthConnectClient(private val context: Context) {
      * temporary duplicate Health Connect records for the old period, which
      * are cleaned up by the 15-day cutoff on the next sync.
      */
-    private fun stableIdForGroup(date: LocalDate, period: Period): String {
+    private fun stableIdForGroup(date: LocalDate, period: TemperaturePeriod): String {
         return "$date:$period"
     }
 

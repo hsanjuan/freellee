@@ -1,34 +1,35 @@
 package link.hector.freellee.ui.screens
 
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.IntrinsicSize.Max
+import android.bluetooth.BluetoothManager
+import android.content.Context
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ChevronRight
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Thermostat
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
@@ -41,39 +42,50 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import android.bluetooth.BluetoothManager
-import android.content.Context
+import link.hector.freellee.data.DeviceStore.RecordItem
+import link.hector.freellee.data.DeviceStore.StepInterval
+import link.hector.freellee.data.TemperatureInterval
+import link.hector.freellee.data.currentTemperatureInterval
+import link.hector.freellee.data.previousTemperatureIntervals
 import link.hector.freellee.ui.components.WatchStatusIndicator
+import link.hector.freellee.ui.theme.AccentAmber
+import link.hector.freellee.ui.theme.AccentBlue
 import link.hector.freellee.ui.theme.AccentGreen
 import link.hector.freellee.ui.theme.CardBackground
 import link.hector.freellee.ui.theme.StatusError
+import link.hector.freellee.ui.theme.SurfaceDark
 import link.hector.freellee.ui.theme.TextPrimary
 import link.hector.freellee.ui.theme.TextSecondary
 import link.hector.freellee.ui.theme.TextTertiary
-import link.hector.freellee.util.formatDuration
+import link.hector.freellee.util.formatClockRange
+import link.hector.freellee.util.formatIntervalRange
 import link.hector.freellee.util.formatTimestamp
 import link.hector.freellee.viewmodel.DashboardUiState
+import link.hector.freellee.viewmodel.HeartRateStats
 import link.hector.freellee.viewmodel.HistoryEntry
 import link.hector.freellee.viewmodel.OlleeViewModel
+import link.hector.freellee.viewmodel.todayHeartRateStats
 import java.time.Instant
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(
     viewModel: OlleeViewModel,
-    onConnectClick: () -> Unit,
     onSync: () -> Unit,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
-    val isConnected by viewModel.isConnected.collectAsState()
     val bleState by viewModel.connectionState.collectAsState()
     val hasPairedDevice by viewModel.hasPairedDevice.collectAsState()
 
@@ -86,17 +98,6 @@ fun DashboardScreen(
             )
             viewModel.clearError()
         }
-    }
-
-    // Full-screen record detail replaces the dashboard content while open.
-    val detailScreen by viewModel.detailScreen.collectAsStateWithLifecycle()
-    (detailScreen as? OlleeViewModel.DetailScreen.Records)?.let { detail ->
-        RecordDetailScreen(
-            title = detail.title,
-            records = detail.records,
-            onBack = viewModel::dismissDetailScreen,
-        )
-        return
     }
 
     Scaffold(
@@ -139,14 +140,10 @@ fun DashboardScreen(
             else -> false
         }
 
-        val onRefresh: () -> Unit = {
-            onSync()
-        }
-
         PullToRefreshBox(
             isRefreshing = isRefreshing,
             state = rememberPullToRefreshState(),
-            onRefresh = onRefresh,
+            onRefresh = onSync,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding),
@@ -159,9 +156,6 @@ fun DashboardScreen(
 
             UnifiedDashboard(
                 state = dashboardState,
-                isConnected = isConnected,
-                onConnectClick = onConnectClick,
-                onViewAll = viewModel::showRecordsDetail,
             ) {
                 WatchStatusIndicator(
                     uiState = uiState,
@@ -178,21 +172,34 @@ fun DashboardScreen(
 @Composable
 private fun UnifiedDashboard(
     state: DashboardUiState.Ready?,
-    isConnected: Boolean,
-    onConnectClick: () -> Unit,
-    onViewAll: (String, List<HistoryEntry>) -> Unit,
     statusIndicator: @Composable () -> Unit,
 ) {
     val dailySteps = state?.steps ?: 0
     val weeklySteps = state?.weeklySteps ?: 0
     val stepIntervals = state?.stepIntervals ?: emptyList()
-    val latestStepSyncTime = stepIntervals.maxOfOrNull { it.syncTimestamp }
+    val lastStepInterval = stepIntervals.maxByOrNull { it.tStart }
     val heartRateRecords = state?.heartRateRecords ?: emptyList()
     val temperatureRecords = state?.temperatureRecords ?: emptyList()
-    val counterRecords = state?.counterRecords ?: emptyList()
-    val stopwatchRecords = state?.stopwatchRecords ?: emptyList()
 
-    // ── Dashboard content ────────────────────────────────────────────────
+    val nowEpochSecond = remember(heartRateRecords, temperatureRecords) {
+        Instant.now().epochSecond
+    }
+    val heartRate = remember(heartRateRecords, nowEpochSecond) {
+        todayHeartRateStats(heartRateRecords, nowEpochSecond)
+    }
+    val temperatureReadings = remember(temperatureRecords) {
+        temperatureRecords.map {
+            RecordItem(0, it.watchTimestampStart, it.watchTimestampEnd, it.value, it.syncTimestamp)
+        }
+    }
+    val currentTemperature = remember(temperatureReadings, nowEpochSecond) {
+        currentTemperatureInterval(temperatureReadings, nowEpochSecond)
+    }
+    val previousTemperatures = remember(temperatureReadings, nowEpochSecond) {
+        previousTemperatureIntervals(temperatureReadings, count = 3, nowEpochSecond = nowEpochSecond)
+    }
+    val lastHeartRate = heartRateRecords.lastOrNull()
+    val lastTemperature = temperatureRecords.lastOrNull()
 
     LazyColumn(
         modifier = Modifier
@@ -204,392 +211,212 @@ private fun UnifiedDashboard(
             statusIndicator()
         }
 
-        // Daily steps + Weekly steps row
+        // Daily steps + rolling seven-day steps
         item {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(Max),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Card(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight(),
-                    colors = CardDefaults.cardColors(containerColor = CardBackground),
-                ) {
-                    Column(modifier = Modifier.padding(20.dp)) {
-                        Text(
-                            "Daily Steps",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = TextSecondary,
-                        )
-                        Spacer(modifier = Modifier.padding(top = 8.dp))
-                        Text(
-                            dailySteps.formatNumber(),
-                            style = MaterialTheme.typography.displayMedium,
-                            color = if (dailySteps > 0) AccentGreen else TextTertiary,
-                        )
-                        if (latestStepSyncTime != null && latestStepSyncTime > 0) {
-                            Text(
-                                "Last synced: ${formatTimestamp(Instant.ofEpochSecond(latestStepSyncTime))}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = TextTertiary,
-                            )
-                        } else {
-                            Text(
-                                "Never synced",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = TextTertiary,
-                            )
-                        }
-                    }
-                }
-
-                Card(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight(),
-                    colors = CardDefaults.cardColors(containerColor = CardBackground),
-                ) {
-                    Column(modifier = Modifier.padding(20.dp)) {
-                        Text(
-                            "Weekly Steps",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = TextSecondary,
-                        )
-                        Spacer(modifier = Modifier.padding(top = 8.dp))
-                        Text(
-                            weeklySteps.formatNumber(),
-                            style = MaterialTheme.typography.displayMedium,
-                            color = if (weeklySteps > 0) AccentGreen else TextTertiary,
-                        )
-                    }
-                }
-            }
+            StepsSection(
+                dailySteps = dailySteps,
+                weeklySteps = weeklySteps,
+                lastInterval = lastStepInterval,
+            )
         }
 
-        // Heart rate + Temperature row
         item {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(Max),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Card(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight(),
-                    colors = CardDefaults.cardColors(containerColor = CardBackground),
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(
-                                Icons.Default.Favorite,
-                                contentDescription = null,
-                                tint = TextSecondary,
-                            )
-                            Column {
-                                Text(
-                                    "Last Heart Rate",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = TextTertiary,
-                                )
-                                Spacer(modifier = Modifier.padding(top = 4.dp))
-                                if (heartRateRecords.isNotEmpty()) {
-                                    val lastHR = heartRateRecords.last()
-                                    Text(
-                                        "${lastHR.value} bpm",
-                                        style = MaterialTheme.typography.headlineMedium,
-                                        color = AccentGreen,
-                                    )
-                                    Text(
-                                        formatTimestamp(Instant.ofEpochSecond(lastHR.watchTimestampStart)),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = TextTertiary,
-                                    )
-                                } else {
-                                    Text(
-                                        "--",
-                                        style = MaterialTheme.typography.headlineMedium,
-                                        color = TextPrimary,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Card(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight(),
-                    colors = CardDefaults.cardColors(containerColor = CardBackground),
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(
-                                Icons.Default.Thermostat,
-                                contentDescription = null,
-                                tint = TextSecondary,
-                            )
-                            Column {
-                                Text(
-                                    "Last Temperature",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = TextTertiary,
-                                )
-                                Spacer(modifier = Modifier.padding(top = 4.dp))
-                                if (temperatureRecords.isNotEmpty()) {
-                                    val lastTemp = temperatureRecords.last()
-                                    Text(
-                                        "%.1f°C".format(lastTemp.value / 100.0),
-                                        style = MaterialTheme.typography.headlineMedium,
-                                        color = AccentGreen,
-                                    )
-                                    Text(
-                                        formatTimestamp(Instant.ofEpochSecond(lastTemp.watchTimestampStart)),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = TextTertiary,
-                                    )
-                                } else {
-                                    Text(
-                                        "--",
-                                        style = MaterialTheme.typography.headlineMedium,
-                                        color = TextPrimary,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            TemperatureSection(
+                current = currentTemperature,
+                previous = previousTemperatures,
+                lastRecord = lastTemperature,
+            )
         }
 
-        // ── History sections ───────────────────────────────────────────
-
-        // Steps history section
         item {
-            val expandedSteps = remember { mutableStateOf(false) }
-            val recentSteps = stepIntervals.takeLast(20).reversed()
-            ExpandableHistorySection(
-                title = "Steps",
-                count = stepIntervals.size,
-                isExpanded = expandedSteps.value,
-                onToggle = { expandedSteps.value = !expandedSteps.value },
-                onViewAll = { onViewAll("Steps", stepIntervals.map { HistoryEntry(it.steps, it.tStart, it.tEnd, it.syncTimestamp) }) },
-            ) {
-                if (stepIntervals.isEmpty()) {
-                    Text(
-                        "No records yet. Sync your watch to see history.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = TextTertiary,
-                    )
-                } else {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        recentSteps.forEach { interval ->
-                            val start = formatTimestamp(Instant.ofEpochSecond(interval.tStart))
-                            val end = formatTimestamp(Instant.ofEpochSecond(interval.tEnd))
-                            HistoryEntryRow(
-                                watchRange = "$start -> $end",
-                                syncTime = if (interval.syncTimestamp > 0) formatTimestamp(Instant.ofEpochSecond(interval.syncTimestamp)) else "—",
-                                value = interval.steps.formatNumber(),
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // Heart rate history section
-        if (heartRateRecords.isNotEmpty()) {
-            item {
-                val expandedHR = remember { mutableStateOf(false) }
-                val recentHR = heartRateRecords.takeLast(20).reversed()
-                ExpandableHistorySection(
-                    title = "Heart Rate",
-                    count = heartRateRecords.size,
-                    isExpanded = expandedHR.value,
-                    onToggle = { expandedHR.value = !expandedHR.value },
-                    onViewAll = { onViewAll("Heart Rate", heartRateRecords) },
-                ) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        recentHR.forEach { entry ->
-                            val watchTime = formatTimestamp(Instant.ofEpochSecond(entry.watchTimestampStart))
-                            HistoryEntryRow(
-                                watchRange = watchTime,
-                                syncTime = formatTimestamp(Instant.ofEpochSecond(entry.syncTimestamp)),
-                                value = "${entry.value} bpm",
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // Temperature history section
-        if (temperatureRecords.isNotEmpty()) {
-            item {
-                val expandedTemp = remember { mutableStateOf(false) }
-                val recentTemp = temperatureRecords.takeLast(20).reversed()
-                ExpandableHistorySection(
-                    title = "Temperature",
-                    count = temperatureRecords.size,
-                    isExpanded = expandedTemp.value,
-                    onToggle = { expandedTemp.value = !expandedTemp.value },
-                    onViewAll = { onViewAll("Temperature", temperatureRecords) },
-                ) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        recentTemp.forEach { entry ->
-                            val start = formatTimestamp(Instant.ofEpochSecond(entry.watchTimestampStart))
-                            val end = formatTimestamp(Instant.ofEpochSecond(entry.watchTimestampEnd))
-                            HistoryEntryRow(
-                                watchRange = "$start -> $end",
-                                syncTime = formatTimestamp(Instant.ofEpochSecond(entry.syncTimestamp)),
-                                value = "%.1f°C".format(entry.value / 100.0),
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // Counter history section
-        if (counterRecords.isNotEmpty()) {
-            item {
-                val expandedCounter = remember { mutableStateOf(false) }
-                val recentCounter = counterRecords.takeLast(20).reversed()
-                ExpandableHistorySection(
-                    title = "Counter",
-                    count = counterRecords.size,
-                    isExpanded = expandedCounter.value,
-                    onToggle = { expandedCounter.value = !expandedCounter.value },
-                    onViewAll = { onViewAll("Counter", counterRecords) },
-                ) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        recentCounter.forEach { entry ->
-                            val watchTime = formatTimestamp(Instant.ofEpochSecond(entry.watchTimestampStart))
-                            HistoryEntryRow(
-                                watchRange = watchTime,
-                                syncTime = formatTimestamp(Instant.ofEpochSecond(entry.syncTimestamp)),
-                                value = "${entry.value}",
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // Stopwatch history section
-        if (stopwatchRecords.isNotEmpty()) {
-            item {
-                val expandedStopwatch = remember { mutableStateOf(false) }
-                val recentStopwatch = stopwatchRecords.takeLast(20).reversed()
-                ExpandableHistorySection(
-                    title = "Stopwatch",
-                    count = stopwatchRecords.size,
-                    isExpanded = expandedStopwatch.value,
-                    onToggle = { expandedStopwatch.value = !expandedStopwatch.value },
-                    onViewAll = { onViewAll("Stopwatch", stopwatchRecords) },
-                ) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        recentStopwatch.forEach { entry ->
-                            val start = formatTimestamp(Instant.ofEpochSecond(entry.watchTimestampStart))
-                            val end = formatTimestamp(Instant.ofEpochSecond(entry.watchTimestampEnd))
-                            HistoryEntryRow(
-                                watchRange = "$start -> $end",
-                                syncTime = formatTimestamp(Instant.ofEpochSecond(entry.syncTimestamp)),
-                                value = formatDuration(entry.value),
-                            )
-                        }
-                    }
-                }
-            }
+            HeartRateSection(
+                stats = heartRate,
+                lastRecord = lastHeartRate,
+            )
         }
     }
 }
 
 @Composable
-private fun ExpandableHistorySection(
-    title: String,
-    count: Int,
-    isExpanded: Boolean,
-    onToggle: () -> Unit,
-    onViewAll: () -> Unit,
-    content: @Composable () -> Unit,
+private fun StepsSection(
+    dailySteps: Int,
+    weeklySteps: Int,
+    lastInterval: StepInterval?,
 ) {
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onToggle),
+        modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = CardBackground),
     ) {
-        Column {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.History, contentDescription = null, tint = AccentGreen, modifier = Modifier.padding(end = 8.dp))
-                    Column {
-                        Text(title, style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
-                        Text("$count records", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
-                    }
-                }
-                Icon(
-                    if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                    contentDescription = if (isExpanded) "Collapse" else "Expand",
-                    tint = TextTertiary,
+        Column(modifier = Modifier.padding(16.dp)) {
+            SectionHeader(
+                icon = Icons.AutoMirrored.Filled.DirectionsWalk,
+                accent = AccentGreen,
+                title = "Steps",
+                subtitle = lastInterval?.let {
+                    formatClockRange(
+                        start = Instant.ofEpochSecond(it.tStart),
+                        end = Instant.ofEpochSecond(it.tEnd),
+                    )
+                } ?: "Never synced",
+                trailing = lastInterval?.let { "${it.steps.formatNumber()} steps" },
+            )
+
+            Spacer(Modifier.height(16.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StatBlock(
+                    label = "Today",
+                    value = dailySteps.formatNumber(),
+                    modifier = Modifier.weight(1f),
+                )
+                StatBlock(
+                    label = "Last 7 days",
+                    value = weeklySteps.formatNumber(),
+                    modifier = Modifier.weight(1f),
                 )
             }
-            if (isExpanded) {
-                HorizontalDivider(color = TextTertiary.copy(alpha = 0.3f), thickness = 1.dp, modifier = Modifier.padding(horizontal = 12.dp))
-                Column(modifier = Modifier.padding(12.dp)) {
-                    content()
-                    if (count > 20) {
-                        TextButton(
-                            onClick = onViewAll,
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.textButtonColors(contentColor = AccentGreen),
-                        ) {
-                            Text(
-                                "View all $count records",
-                                style = MaterialTheme.typography.labelLarge,
-                            )
-                            Icon(
-                                Icons.Default.ChevronRight,
-                                contentDescription = null,
-                                modifier = Modifier.padding(start = 4.dp),
-                            )
-                        }
+        }
+    }
+}
+
+@Composable
+private fun HeartRateSection(
+    stats: HeartRateStats,
+    lastRecord: HistoryEntry?,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = CardBackground),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            SectionHeader(
+                icon = Icons.Default.Favorite,
+                accent = AccentGreen,
+                title = "Heart Rate",
+                subtitle = lastRecord?.let {
+                    formatTimestamp(Instant.ofEpochSecond(it.watchTimestampStart))
+                } ?: "No measurements yet",
+                trailing = lastRecord?.let { "${it.value} bpm" },
+            )
+
+            Spacer(Modifier.height(16.dp))
+            Text(
+                "Today",
+                style = MaterialTheme.typography.labelLarge,
+                color = TextSecondary,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StatBlock(
+                    label = "Average",
+                    value = stats.formatAverage(),
+                    modifier = Modifier.weight(1f),
+                )
+                StatBlock(
+                    label = "Maximum",
+                    value = stats.maximum.formatBpm(),
+                    modifier = Modifier.weight(1f),
+                )
+                StatBlock(
+                    label = "Minimum",
+                    value = stats.minimum.formatBpm(),
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TemperatureSection(
+    current: TemperatureInterval,
+    previous: List<TemperatureInterval>,
+    lastRecord: HistoryEntry?,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = CardBackground),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            SectionHeader(
+                icon = Icons.Default.Thermostat,
+                accent = AccentAmber,
+                title = "Skin Temperature",
+                subtitle = lastRecord?.let {
+                    "Last: %.1f°C · %s".format(
+                        it.value / 100.0,
+                        formatTimestamp(Instant.ofEpochSecond(it.watchTimestampStart)),
+                    )
+                } ?: "No measurements yet",
+                trailing = current.period.label,
+            )
+
+            Spacer(Modifier.height(16.dp))
+            Text(
+                "Current interval",
+                style = MaterialTheme.typography.labelLarge,
+                color = TextSecondary,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StatBlock(
+                    label = "Baseline",
+                    value = current.baselineCelsius?.let { "%.1f°C".format(it) } ?: "—",
+                    modifier = Modifier.weight(1f),
+                )
+                StatBlock(
+                    label = "Deviation",
+                    value = current.deviationCelsius.formatDeviation(),
+                    valueColor = current.deviationCelsius.deviationColor(),
+                    modifier = Modifier.weight(1f),
+                )
+            }
+
+            Spacer(Modifier.height(16.dp))
+            Text(
+                "Previous intervals",
+                style = MaterialTheme.typography.labelLarge,
+                color = TextSecondary,
+            )
+            Spacer(Modifier.height(8.dp))
+
+            if (previous.isEmpty()) {
+                Text(
+                    "No completed intervals yet",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextTertiary,
+                )
+            } else {
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        "Period",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextTertiary,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        "Baseline",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextTertiary,
+                        modifier = Modifier.width(76.dp),
+                        textAlign = TextAlign.End,
+                    )
+                    Text(
+                        "Deviation",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextTertiary,
+                        modifier = Modifier.width(84.dp),
+                        textAlign = TextAlign.End,
+                    )
+                }
+
+                previous.forEachIndexed { index, interval ->
+                    if (index > 0) {
+                        HorizontalDivider(
+                            color = TextTertiary.copy(alpha = 0.2f),
+                            modifier = Modifier.padding(vertical = 2.dp),
+                        )
                     }
+                    TemperatureIntervalRow(interval)
                 }
             }
         }
@@ -597,19 +424,149 @@ private fun ExpandableHistorySection(
 }
 
 @Composable
-private fun HistoryEntryRow(watchRange: String, syncTime: String, value: String) {
+private fun TemperatureIntervalRow(interval: TemperatureInterval) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(modifier = Modifier.weight(1f)) {
-            Text("Watch: $watchRange", style = MaterialTheme.typography.bodySmall, color = TextTertiary)
-            Text("Sync: $syncTime", style = MaterialTheme.typography.bodySmall, color = TextTertiary)
+            Text(
+                interval.period.label,
+                style = MaterialTheme.typography.bodyLarge,
+                color = TextPrimary,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                text = if (interval.lastMeasuredAtEpochSecond != null) {
+                    formatIntervalRange(
+                        start = Instant.ofEpochSecond(interval.startEpochSecond),
+                        end = Instant.ofEpochSecond(interval.endEpochSecond),
+                    )
+                } else {
+                    "No readings in this period"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = TextTertiary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
-        Text(value, style = MaterialTheme.typography.bodyMedium, color = TextPrimary, modifier = Modifier.padding(start = 8.dp))
+        Text(
+            text = interval.baselineCelsius?.let { "%.1f°C".format(it) } ?: "—",
+            style = MaterialTheme.typography.titleMedium,
+            color = if (interval.baselineCelsius != null) TextPrimary else TextTertiary,
+            modifier = Modifier.width(76.dp),
+            textAlign = TextAlign.End,
+        )
+        Text(
+            text = interval.deviationCelsius.formatDeviation(),
+            style = MaterialTheme.typography.titleMedium,
+            color = interval.deviationCelsius.deviationColor(),
+            modifier = Modifier.width(84.dp),
+            textAlign = TextAlign.End,
+        )
     }
+}
+
+@Composable
+private fun SectionHeader(
+    icon: ImageVector,
+    accent: Color,
+    title: String,
+    subtitle: String,
+    trailing: String?,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(CircleShape)
+                .background(accent.copy(alpha = 0.15f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = accent,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                color = TextPrimary,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = TextTertiary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (trailing != null) {
+            Spacer(Modifier.width(12.dp))
+            Text(
+                trailing,
+                style = MaterialTheme.typography.titleMedium,
+                color = accent,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+    }
+}
+
+@Composable
+private fun StatBlock(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    valueColor: Color = TextPrimary,
+) {
+    Column(
+        modifier = modifier
+            .background(SurfaceDark, RoundedCornerShape(12.dp))
+            .padding(horizontal = 10.dp, vertical = 12.dp),
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = TextTertiary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            value,
+            style = MaterialTheme.typography.titleLarge,
+            color = valueColor,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+        )
+    }
+}
+
+private fun HeartRateStats.formatAverage(): String =
+    average?.let { "${Math.round(it)} bpm" } ?: "—"
+
+private fun Int?.formatBpm(): String = this?.let { "$it bpm" } ?: "—"
+
+private fun Double?.formatDeviation(): String =
+    this?.let { "%+.1f°C".format(it) } ?: "—"
+
+private fun Double?.deviationColor(): Color = when {
+    this == null -> TextTertiary
+    this > 0.05 -> AccentAmber
+    this < -0.05 -> AccentBlue
+    else -> TextSecondary
 }
 
 private fun Int.formatNumber(): String {
