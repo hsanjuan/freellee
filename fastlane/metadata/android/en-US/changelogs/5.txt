@@ -1,0 +1,1 @@
+Data tab now shows interactive step and skin-temperature graphs. Scroll through up to a month of daily steps and 24-hour temperature trends, including the measured value, baseline, and hourly average.

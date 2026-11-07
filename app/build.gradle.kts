@@ -28,8 +28,8 @@ extensions.configure<ApplicationExtension> {
         applicationId = "link.hector.freellee"
         minSdk = 34
         targetSdk = 37
-        versionCode = 4
-        versionName = "0.0.4"
+        versionCode = 5
+        versionName = "0.0.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
