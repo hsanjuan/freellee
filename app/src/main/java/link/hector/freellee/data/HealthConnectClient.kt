@@ -551,8 +551,10 @@ class HealthConnectClient(private val context: Context) {
             }
             .sortedBy { it.tStart }
 
-        // Skip first group (truncated by 15-day cutoff) and last group (still being built)
-        return if (allGroups.size > 2) allGroups.drop(1).dropLast(1) else emptyList()
+        // Skip first group (truncated by 15-day cutoff) but keep the last group
+        // (partial interval) since the clientRecordId is stable and allows
+        // Health Connect to replace earlier partial writes with updated data.
+        return if (allGroups.size > 1) allGroups.drop(1) else emptyList()
     }
 
     /**
