@@ -25,6 +25,7 @@ import java.time.LocalDate
 import java.time.ZoneId
 import link.hector.freellee.BLE_CONNECT_TIMEOUT_MS
 import link.hector.freellee.DEFAULT_WATCH_NAME
+import link.hector.freellee.STEP_RETENTION_DAYS
 import link.hector.freellee.data.DeviceStore
 import link.hector.freellee.data.DeviceStore.RecordItem
 import link.hector.freellee.data.DeviceStore.StepInterval
@@ -356,7 +357,7 @@ class OlleeViewModel(
             _uiState.value = DashboardUiState.Syncing("Saving step intervals")
             var mergedIntervals = emptyList<StepInterval>()
             if (allStepIntervals.isNotEmpty()) {
-                val stepCutoffEpoch = now - 14 * 24 * 3600L
+                val stepCutoffEpoch = now - STEP_RETENTION_DAYS * 24 * 3600L
                 var existingIntervals = deviceStore.getStepIntervalsForDevice(targetAddress).first()
                 // Prune existing step intervals older than 14 days
                 val existingPrunedCount = existingIntervals.size

@@ -58,6 +58,8 @@ import link.hector.freellee.data.DeviceStore.StepInterval
 import link.hector.freellee.data.TemperatureInterval
 import link.hector.freellee.data.currentTemperatureInterval
 import link.hector.freellee.data.previousTemperatureIntervals
+import link.hector.freellee.ui.charts.StepsBarChart
+import link.hector.freellee.ui.charts.TemperatureLineChart
 import link.hector.freellee.ui.components.WatchStatusIndicator
 import link.hector.freellee.ui.theme.AccentAmber
 import link.hector.freellee.ui.theme.AccentBlue
@@ -181,7 +183,7 @@ private fun UnifiedDashboard(
     val heartRateRecords = state?.heartRateRecords ?: emptyList()
     val temperatureRecords = state?.temperatureRecords ?: emptyList()
 
-    val nowEpochSecond = remember(heartRateRecords, temperatureRecords) {
+    val nowEpochSecond = remember(heartRateRecords, temperatureRecords, stepIntervals) {
         Instant.now().epochSecond
     }
     val heartRate = remember(heartRateRecords, nowEpochSecond) {
@@ -217,6 +219,8 @@ private fun UnifiedDashboard(
                 dailySteps = dailySteps,
                 weeklySteps = weeklySteps,
                 lastInterval = lastStepInterval,
+                stepIntervals = stepIntervals,
+                nowEpochSecond = nowEpochSecond,
             )
         }
 
@@ -225,6 +229,8 @@ private fun UnifiedDashboard(
                 current = currentTemperature,
                 previous = previousTemperatures,
                 lastRecord = lastTemperature,
+                readings = temperatureReadings,
+                nowEpochSecond = nowEpochSecond,
             )
         }
 
@@ -242,6 +248,8 @@ private fun StepsSection(
     dailySteps: Int,
     weeklySteps: Int,
     lastInterval: StepInterval?,
+    stepIntervals: List<StepInterval>,
+    nowEpochSecond: Long,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -259,6 +267,13 @@ private fun StepsSection(
                     )
                 } ?: "Never synced",
                 trailing = lastInterval?.let { "${it.steps.formatNumber()} steps" },
+            )
+
+            Spacer(Modifier.height(16.dp))
+            StepsBarChart(
+                intervals = stepIntervals,
+                nowEpochSecond = nowEpochSecond,
+                modifier = Modifier.fillMaxWidth(),
             )
 
             Spacer(Modifier.height(16.dp))
@@ -331,6 +346,8 @@ private fun TemperatureSection(
     current: TemperatureInterval,
     previous: List<TemperatureInterval>,
     lastRecord: HistoryEntry?,
+    readings: List<RecordItem>,
+    nowEpochSecond: Long,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -348,6 +365,13 @@ private fun TemperatureSection(
                     )
                 } ?: "No measurements yet",
                 trailing = current.period.label,
+            )
+
+            Spacer(Modifier.height(16.dp))
+            TemperatureLineChart(
+                records = readings,
+                nowEpochSecond = nowEpochSecond,
+                modifier = Modifier.fillMaxWidth(),
             )
 
             Spacer(Modifier.height(16.dp))
