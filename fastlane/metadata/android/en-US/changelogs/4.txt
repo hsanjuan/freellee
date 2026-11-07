@@ -1,0 +1,3 @@
+Sleep session tracking and improved temperature sync:
+- Track sleep sessions in Health Connect (awake-in-bed + sleeping stages)
+- Sync partial temperature intervals as they happen instead of waiting for the period to end
