@@ -4,7 +4,7 @@ An **unofficial** Android app for [Ollee Watch](https://ollee.com) boards. No in
 
 <div align="center">
 
-[![Get it on Obtanium](https://github.com/ImranR98/Obtainium/blob/main/assets/graphics/badge_obtainium.png)](obtainium://add?url=https://github.com/hsanjuan/freellee)
+[![Get it on Obtanium](https://github.com/ImranR98/Obtainium/blob/main/assets/graphics/badge_obtainium.png){:height="80px"}](obtainium://add?url=https://github.com/hsanjuan/freellee)
 
 </div>
 
