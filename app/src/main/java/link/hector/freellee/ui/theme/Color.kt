@@ -13,6 +13,7 @@ val AccentGreen = Color(0xFF00E676)
 val AccentAmber = Color(0xFFFFA500)
 val AccentTeal = Color(0xFF00BCD4)
 val AccentBlue = Color(0xFF2196F3)
+val AccentPurple = Color(0xFF9C64E6)
 
 val StatusConnected = AccentGreen
 val StatusDisconnected = Color(0xFF757575)

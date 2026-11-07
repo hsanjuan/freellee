@@ -1,6 +1,5 @@
 package link.hector.freellee.ui.screens
 
-import android.util.Log
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -18,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
@@ -58,6 +58,7 @@ import link.hector.freellee.data.HealthConnectClient
 import link.hector.freellee.ui.components.RecordCard
 import link.hector.freellee.ui.components.WatchStatusIndicator
 import link.hector.freellee.ui.theme.AccentGreen
+import link.hector.freellee.ui.theme.AccentPurple
 import link.hector.freellee.ui.theme.CardBackground
 import link.hector.freellee.ui.theme.TextPrimary
 import link.hector.freellee.ui.theme.TextSecondary
@@ -81,8 +82,6 @@ private const val REMOVE_ANIMATION_MILLIS = 300
 /** How long a row stays in the undoable "pending delete" state before it is removed. */
 private const val DELETE_GRACE_MILLIS = 4_000L
 
-private const val TAG = "ActivitiesScreen"
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ActivitiesScreen(
@@ -93,6 +92,7 @@ fun ActivitiesScreen(
 ) {
     val pendingActivities by deviceStore.getPendingActivities().collectAsState(initial = emptyList())
     val lastExerciseType by deviceStore.lastExerciseType.collectAsState(initial = null)
+    val lastRecordType by deviceStore.lastRecordType.collectAsState(initial = null)
     var showExerciseTypeSheet by remember { mutableStateOf(false) }
     var selectedActivity by remember { mutableStateOf<DeviceStore.PendingActivity?>(null) }
     var removingIds by remember { mutableStateOf(emptySet<String>()) }
@@ -124,8 +124,11 @@ fun ActivitiesScreen(
 
     Scaffold(
         floatingActionButton = {
-            val assignedCount = pendingActivities.count {
-                it.assignedExerciseType != null && it.id !in pendingDeleteIds
+            val assignedCount = pendingActivities.count { activity ->
+                activity.id !in pendingDeleteIds && when (activity.recordType) {
+                    DeviceStore.RecordType.EXERCISE -> activity.assignedExerciseType != null
+                    DeviceStore.RecordType.SLEEP -> true
+                }
             }
             if (assignedCount > 0 && !syncingAll) {
                 FloatingActionButton(
@@ -267,14 +270,27 @@ fun ActivitiesScreen(
                                     onDelete = { scheduleDelete(activity) },
                                     onCancelDelete = { cancelDelete(activity.id) },
                                     onTag = { act ->
-                                        // Swipe left: tag with the most recently used exercise type
+                                        // Swipe left: tag with the most recently used record type
                                         coroutineScope.launch {
-                                            deviceStore.updatePendingActivity(
-                                                act.copy(
-                                                    assignedExerciseType = lastExerciseType
-                                                        ?: ExerciseSessionRecord.EXERCISE_TYPE_WALKING,
-                                                ),
-                                            )
+                                            when (lastRecordType) {
+                                                DeviceStore.RecordType.SLEEP -> {
+                                                    deviceStore.updatePendingActivity(
+                                                        act.copy(
+                                                            recordType = DeviceStore.RecordType.SLEEP,
+                                                            assignedExerciseType = null,
+                                                        ),
+                                                    )
+                                                }
+                                                DeviceStore.RecordType.EXERCISE, null -> {
+                                                    deviceStore.updatePendingActivity(
+                                                        act.copy(
+                                                            recordType = DeviceStore.RecordType.EXERCISE,
+                                                            assignedExerciseType = lastExerciseType
+                                                                ?: ExerciseSessionRecord.EXERCISE_TYPE_WALKING,
+                                                        ),
+                                                    )
+                                                }
+                                            }
                                         }
                                     },
                                 )
@@ -288,18 +304,28 @@ fun ActivitiesScreen(
         // Batch sync: write all assigned activities to HC once, when the user starts a sync.
         LaunchedEffect(syncingAll) {
             if (!syncingAll) return@LaunchedEffect
-            val assigned = pendingActivities.filter { it.assignedExerciseType != null && it.id !in pendingDeleteIds }
+            val assigned = pendingActivities.filter {
+                when (it.recordType) {
+                    DeviceStore.RecordType.EXERCISE -> it.assignedExerciseType != null
+                    DeviceStore.RecordType.SLEEP -> true
+                } && it.id !in pendingDeleteIds
+            }
             var removedIds = emptySet<String>()
             for (activity in assigned) {
-                val written = try {
-                    healthConnectClient.writeExerciseSessionWithType(
-                        tStart = activity.tStart,
-                        tEnd = activity.tEnd,
-                        exerciseType = activity.assignedExerciseType!!,
-                    )
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to write exercise ${activity.id}", e)
-                    false
+                val written = when (activity.recordType) {
+                    DeviceStore.RecordType.EXERCISE -> {
+                        healthConnectClient.writeExerciseSessionWithType(
+                            tStart = activity.tStart,
+                            tEnd = activity.tEnd,
+                            exerciseType = activity.assignedExerciseType!!,
+                        )
+                    }
+                    DeviceStore.RecordType.SLEEP -> {
+                        healthConnectClient.writeSleepSession(
+                            tStart = activity.tStart,
+                            tEnd = activity.tEnd,
+                        )
+                    }
                 }
                 if (written) {
                     removedIds = removedIds + activity.id
@@ -328,8 +354,28 @@ fun ActivitiesScreen(
                 val activity = selectedActivity!!
                 // Persist type assignment + remember it as the most recently used type
                 coroutineScope.launch {
-                    deviceStore.updatePendingActivity(activity.copy(assignedExerciseType = exerciseType))
+                    deviceStore.updatePendingActivity(
+                        activity.copy(
+                            recordType = DeviceStore.RecordType.EXERCISE,
+                            assignedExerciseType = exerciseType,
+                        ),
+                    )
+                    deviceStore.setLastRecordType(DeviceStore.RecordType.EXERCISE)
                     deviceStore.setLastExerciseType(exerciseType)
+                }
+                selectedActivity = null
+            },
+            onSleepSelected = {
+                showExerciseTypeSheet = false
+                val activity = selectedActivity!!
+                coroutineScope.launch {
+                    deviceStore.updatePendingActivity(
+                        activity.copy(
+                            recordType = DeviceStore.RecordType.SLEEP,
+                            assignedExerciseType = null,
+                        ),
+                    )
+                    deviceStore.setLastRecordType(DeviceStore.RecordType.SLEEP)
                 }
                 selectedActivity = null
             },
@@ -445,17 +491,18 @@ private fun ActivityCard(
 ) {
     val startFormatted = formatTimeOnly(Instant.ofEpochSecond(activity.tStart))
     val endFormatted = formatTimeOnly(Instant.ofEpochSecond(activity.tEnd))
-    val typeInfo = activity.assignedExerciseType?.let { ExerciseTypeInfo.fromType(it) }
+    val isSleep = activity.recordType == DeviceStore.RecordType.SLEEP
+    val typeInfo = if (isSleep) null else activity.assignedExerciseType?.let { ExerciseTypeInfo.fromType(it) }
 
     RecordCard(
-        title = typeInfo?.label ?: "Tap to change type",
+        title = if (isSleep) "Sleep" else (typeInfo?.label ?: "Tap to change type"),
         subtitle = "$startFormatted – $endFormatted",
         leadingIcon = Icons.Default.Timer,
-        leadingEmoji = typeInfo?.icon,
+        leadingEmoji = if (isSleep) "🌙" else typeInfo?.icon,
         trailing = formatDuration(activity.durationMillis),
         isPendingDelete = isPendingDelete,
         onClick = onClick,
-        accent = AccentGreen,
+        accent = if (isSleep) AccentPurple else AccentGreen,
     )
 }
 
@@ -463,6 +510,7 @@ private fun ActivityCard(
 @Composable
 private fun ExerciseTypeBottomSheet(
     onSelected: (Int) -> Unit,
+    onSleepSelected: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     ModalBottomSheet(
@@ -482,7 +530,7 @@ private fun ExerciseTypeBottomSheet(
                 fontWeight = FontWeight.Medium,
             )
             Text(
-                "Select the type of exercise for this stopwatch session.",
+                "Choose how to record this stopwatch session.",
                 style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary,
                 modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
@@ -499,6 +547,12 @@ private fun ExerciseTypeBottomSheet(
                         info = info,
                         onClick = { onSelected(info.type) },
                     )
+                }
+                item {
+                    HorizontalDivider(color = TextTertiary.copy(alpha = 0.2f))
+                }
+                item {
+                    SleepListItem(onClick = onSleepSelected)
                 }
             }
 
@@ -616,5 +670,30 @@ private data class ExerciseTypeInfo(
         private val typeMap = all.associateBy { it.type }
 
         fun fromType(type: Int): ExerciseTypeInfo? = typeMap[type]
+    }
+}
+
+@Composable
+private fun SleepListItem(
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "🌙",
+            style = MaterialTheme.typography.headlineSmall,
+            modifier = Modifier.padding(end = 12.dp),
+        )
+        Text(
+            text = "Sleep",
+            style = MaterialTheme.typography.bodyLarge,
+            color = TextPrimary,
+        )
     }
 }

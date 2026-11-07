@@ -9,6 +9,7 @@ import androidx.health.connect.client.HealthConnectFeatures
 import androidx.health.connect.client.PermissionController
 import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.HeartRateRecord
+import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.records.SkinTemperatureRecord
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.permission.HealthPermission
@@ -20,6 +21,7 @@ import link.hector.freellee.DEFAULT_WATCH_NAME
 import link.hector.freellee.data.CounterEventWriter
 import link.hector.freellee.data.DeviceStore.RecordItem
 import link.hector.freellee.data.DeviceStore.StepInterval
+import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -107,6 +109,7 @@ class HealthConnectClient(private val context: Context) {
                 add(HealthPermission.getWritePermission(SkinTemperatureRecord::class))
             }
             add(HealthPermission.getWritePermission(ExerciseSessionRecord::class))
+            add(HealthPermission.getWritePermission(SleepSessionRecord::class))
             // Counter events
             addAll(CounterEventWriter.counterEventPermissions)
         }
@@ -289,6 +292,78 @@ class HealthConnectClient(private val context: Context) {
             return true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to write exercise session to Health Connect", e)
+            return false
+        }
+    }
+
+    /**
+     * Writes a sleep session record to Health Connect.
+     *
+     * The session is split into two stages:
+     * 1. [SleepSessionRecord.STAGE_TYPE_AWAKE_IN_BED] for the first 30 minutes
+     * 2. [SleepSessionRecord.STAGE_TYPE_SLEEPING] for the remainder
+     *
+     * Returns false if the interval is empty or the permission is missing.
+     */
+    suspend fun writeSleepSession(
+        tStart: Long,
+        tEnd: Long,
+    ): Boolean {
+        try {
+            if (tEnd <= tStart) {
+                Log.w(TAG, "Skipping sleep session with invalid interval [$tStart – $tEnd]")
+                return false
+            }
+
+            val hc = requireClient()
+
+            if (!hc.permissionController.getGrantedPermissions().contains(
+                HealthPermission.getWritePermission(SleepSessionRecord::class)
+            )) {
+                Log.w(TAG, "Sleep Write permission not granted — skipping sleep write")
+                return false
+            }
+
+            val startInstant = Instant.ofEpochSecond(tStart)
+            val endInstant = Instant.ofEpochSecond(tEnd)
+            val metadata = createMetadata(startInstant, endInstant)
+
+            // The watch's stopwatch starts with the wearer awake in bed; the first 30 minutes
+            // are treated as awake-in-bed, and the rest as generic sleep.
+            val awakeStageEnd = minOf(startInstant.plus(Duration.ofMinutes(30)), endInstant)
+            val stages = buildList {
+                add(
+                    SleepSessionRecord.Stage(
+                        startInstant,
+                        awakeStageEnd,
+                        SleepSessionRecord.STAGE_TYPE_AWAKE_IN_BED,
+                    )
+                )
+                if (endInstant > awakeStageEnd) {
+                    add(
+                        SleepSessionRecord.Stage(
+                            awakeStageEnd,
+                            endInstant,
+                            SleepSessionRecord.STAGE_TYPE_SLEEPING,
+                        )
+                    )
+                }
+            }
+
+            val record = SleepSessionRecord(
+                startTime = startInstant,
+                startZoneOffset = null,
+                endTime = endInstant,
+                endZoneOffset = null,
+                stages = stages,
+                metadata = metadata,
+            )
+
+            hc.insertRecords(listOf(record))
+            Log.d(TAG, "Wrote sleep session [$tStart – $tEnd]")
+            return true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to write sleep session to Health Connect", e)
             return false
         }
     }

@@ -4,7 +4,7 @@ Freellee is an unofficial Android app for Ollee Watch boards. It runs entirely o
 no accounts and no internet access, and none of your data is sent to the developer or to any third
 party.
 
-_Last updated: 8 October 2026._
+_Last updated: 2 November 2026._
 
 This is the same policy shown in the app when Health Connect's permissions screen opens its
 **Privacy policy** link. It is kept in sync with the in-app copy by `PrivacyPolicySyncTest`.
@@ -18,8 +18,8 @@ your watch; the app does not collect it from anywhere else.
 ## How your data is stored
 
 Watch records are saved in Freellee's private app storage on your phone. If you grant Health Connect
-access, Freellee also writes steps, heart rate, skin temperature and exercise sessions into Android
-Health Connect, where they are available to the health apps you choose.
+access, Freellee also writes steps, heart rate, skin temperature and exercise and sleep sessions
+into Android Health Connect, where they are available to the health apps you choose.
 
 ## No sharing or tracking
 

@@ -11,7 +11,7 @@ internal data class PolicySection(val heading: String, val body: String)
  */
 internal object PrivacyPolicy {
 
-    const val LAST_UPDATED = "8 October 2026"
+    const val LAST_UPDATED = "2 November 2026"
 
     const val INTRO =
         "Freellee is an unofficial Android app for Ollee Watch boards. It runs entirely on your " +
@@ -29,8 +29,8 @@ internal object PrivacyPolicy {
             "How your data is stored",
             "Watch records are saved in Freellee's private app storage on your phone. If you grant " +
                 "Health Connect access, Freellee also writes steps, heart rate, skin temperature " +
-                "and exercise sessions into Android Health Connect, where they are available to " +
-                "the health apps you choose.",
+                "and exercise and sleep sessions into Android Health Connect, where they are " +
+                "available to the health apps you choose.",
         ),
         PolicySection(
             "No sharing or tracking",

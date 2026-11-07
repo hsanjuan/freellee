@@ -19,6 +19,10 @@ import org.json.JSONObject
 
 private const val TAG = "DeviceStore"
 
+private fun recordTypeFromName(name: String): DeviceStore.RecordType =
+    DeviceStore.RecordType.entries.firstOrNull { it.name == name }
+        ?: DeviceStore.RecordType.EXERCISE
+
 private val Context.deviceStore: DataStore<Preferences> by preferencesDataStore(name = "devices")
 
 data class PairedDevice(
@@ -335,7 +339,22 @@ class DeviceStore(private val context: Context) {
         }
     }
 
-    // -- Last used exercise type --
+    // -- Last used record type (exercise or sleep) --
+
+    /** Record type for a pending activity. */
+    enum class RecordType { EXERCISE, SLEEP }
+
+    private val LAST_RECORD_TYPE_KEY = stringPreferencesKey("last_record_type")
+    private val LAST_EXERCISE_TYPE_KEY = intPreferencesKey("last_exercise_type")
+
+    /** Persist the most recently used record type, used for quick swipe-tagging. */
+    suspend fun setLastRecordType(type: RecordType) {
+        context.deviceStore.edit { prefs -> prefs[LAST_RECORD_TYPE_KEY] = type.name }
+    }
+
+    /** The most recently used record type, or null if none has been chosen yet. */
+    val lastRecordType: Flow<RecordType?> = context.deviceStore.data
+        .map { prefs -> prefs[LAST_RECORD_TYPE_KEY]?.let(::recordTypeFromName) }
 
     /** Persist the most recently used exercise type, used for quick swipe-tagging. */
     suspend fun setLastExerciseType(type: Int) {
@@ -354,6 +373,7 @@ class DeviceStore(private val context: Context) {
         val tEnd: Long,
         val durationMillis: Int,
         val syncTime: Long = 0L,
+        val recordType: RecordType = RecordType.EXERCISE,
         val assignedExerciseType: Int? = null,
     )
 
@@ -407,6 +427,9 @@ class DeviceStore(private val context: Context) {
                 tEnd = obj.getLong("tEnd"),
                 durationMillis = obj.getInt("durationMillis"),
                 syncTime = if (obj.has("syncTime")) obj.getLong("syncTime") else 0L,
+                recordType = recordTypeFromName(
+                    obj.optString("recordType", RecordType.EXERCISE.name),
+                ),
                 assignedExerciseType = if (obj.has("assignedExerciseType")) obj.getInt("assignedExerciseType") else null,
             )
         }
@@ -418,6 +441,7 @@ class DeviceStore(private val context: Context) {
         obj.put("tEnd", act.tEnd)
         obj.put("durationMillis", act.durationMillis)
         obj.put("syncTime", act.syncTime)
+        obj.put("recordType", act.recordType.name)
         if (act.assignedExerciseType != null) {
             obj.put("assignedExerciseType", act.assignedExerciseType)
         }

@@ -63,7 +63,7 @@ data class TemperatureInterval(
     val deviationCelsius: Double?,
     /** Timestamp of the most recent reading in this interval. */
     val lastMeasuredAtEpochSecond: Long?,
-    /** Number of valid readings (at or above 25 °C) in this interval. */
+    /** Number of valid readings (at or above 26 °C) in this interval. */
     val readingCount: Int,
 )
 
@@ -71,7 +71,7 @@ data class TemperatureInterval(
  * The day-part interval that contains [nowEpochSecond], including readings recorded so far.
  *
  * Its baseline is the median of earlier readings in the same period (matching
- * [link.hector.freellee.data.HealthConnectClient]); readings below 25 °C are discarded. This
+ * [link.hector.freellee.data.HealthConnectClient]); readings below 26 °C are discarded. This
  * interval is still being built, so Health Connect will only receive it after it completes.
  */
 fun currentTemperatureInterval(
@@ -201,4 +201,4 @@ fun periodBaseline(
 }
 
 /** Readings below this value (in centi-degrees Celsius) are treated as sensor noise. */
-const val MIN_VALID_TEMPERATURE = 2500
+const val MIN_VALID_TEMPERATURE = 2600
