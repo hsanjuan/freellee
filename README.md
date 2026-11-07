@@ -2,11 +2,17 @@
 
 An **unofficial** Android app for [Ollee Watch](https://ollee.com) boards. No internet required — everything runs locally on your phone.
 
+<div align="center">
+
+[![Get it on Obtanium](https://github.com/ImranR98/Obtainium/blob/main/assets/graphics/badge_obtainium.png)](obtainium://add?url=https://github.com/hsanjuan/freellee)
+
+</div>
+
 ## Features
 
 - **Bluetooth LE pairing** with Ollee watches (board-level firmware)
-- **Syncs Steps, Heart Rate, and Skin Temperature** records to [Android Health Connect](https://developer.android.com/health-and-fitness/health-connect)
-- **Stopwatch events** synced as Exercise Sessions to Health Connect
+- **Syncs Steps, Heart Rate, Skin Temperature, Sleep, and Exercise Sessions** to [Android Health Connect](https://developer.android.com/health-and-fitness/health-connect)
+- **Stopwatch events** synced as Exercise Sessions or Sleep Sessions to Health Connect
 - **Compatible with official firmware** — works out of the box
 - Additional tooling in repository:
   - **YAML config export/import** — read and write full watch configurations
@@ -28,13 +34,13 @@ An **unofficial** Android app for [Ollee Watch](https://ollee.com) boards. No in
 
 Unlike the official app, Freellee logs temperature readings as **SkinTemperature** records (not BodyTemperature) in Health Connect. Skin temperature can help track general health and signal illness early via deviation from your personal baseline.
 
-The day is divided into four periods — **night, morning, afternoon, evening** — each with an **independent temperature baseline** calculated from the last two weeks. At the end of each period, temperature readings are synced to Health Connect, anchored in that period's baseline.
+The day is divided into four periods — **night, morning, afternoon, evening** — each with an **independent temperature baseline** calculated from the last two weeks.
 
 > **Tip:** It is recommended to patch the watch firmware to perform SkinTemperature readings more often than once an hour for best results.
 
 ## Stopwatch Events
 
-Stopwatch events from the watch appear on the **Activities** tab. Before syncing events to Health Connect as Exercise Sessions, you can select an **exercise type** (running, HIIT, football, etc.) for each session. This lets Health Connect accurately categorize and display your workouts.
+Stopwatch events from the watch appear on the **Activities** tab. Before syncing events to Health Connect, you can choose an **exercise type** (running, HIIT, football, etc.) or mark it as **Sleep**. This lets Health Connect accurately categorize and display your workouts or sleep sessions.
 
 ## Build & Install
 
