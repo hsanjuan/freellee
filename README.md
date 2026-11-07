@@ -21,9 +21,13 @@ An **unofficial** Android app for [Ollee Watch](https://ollee.com) boards. No in
 
 ## Screenshots
 
-| Dashboard | Devices (Disconnected) | Devices (Connected) | Activities |
+| Data | History | Activities | Counters |
 |---|---|---|---|
-| <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/1.png" width="180" alt="Dashboard"> | <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/2.png" width="180" alt="Devices Disconnected"> | <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/3.png" width="180" alt="Devices Connected"> | <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/4.png" width="180" alt="Activities"> |
+| <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/1.png" width="180" alt="Data dashboard"> | <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/2.png" width="180" alt="History"> | <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/3.png" width="180" alt="Activities"> | <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/4.png" width="180" alt="Counters"> |
+
+| Devices (Connected) | Record Details |
+|---|---|
+| <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/5.png" width="180" alt="Devices Connected"> | <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/6.png" width="180" alt="Record Details"> |
 
 ## Requirements
 
