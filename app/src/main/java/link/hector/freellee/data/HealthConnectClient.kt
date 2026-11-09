@@ -25,7 +25,6 @@ import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 
 private const val TAG = "HealthConnectClient"
 
@@ -199,10 +198,6 @@ class HealthConnectClient(private val context: Context) {
 
             hc.insertRecords(records)
             Log.d(TAG, "Wrote ${records.size} step intervals to Health Connect")
-            
-            for (record in records) {
-                Log.d(TAG, "  [${formatTime(record.startTime)} – ${formatTime(record.endTime)}] ${record.count} steps")
-            }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to write step intervals to Health Connect", e)
         }
@@ -245,11 +240,6 @@ class HealthConnectClient(private val context: Context) {
 
             hc.insertRecords(healthRecords)
             Log.d(TAG, "Wrote ${healthRecords.size} heart rate records to Health Connect")
-            
-            for (record in healthRecords) {
-                val bpm = record.samples.firstOrNull()?.beatsPerMinute ?: 0
-                Log.d(TAG, "  [${formatTime(record.startTime)}] $bpm bpm")
-            }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to write heart rate records to Health Connect", e)
         }
@@ -453,11 +443,6 @@ class HealthConnectClient(private val context: Context) {
             try {
                 hc.insertRecords(healthRecords)
                 Log.d(TAG, "Wrote ${healthRecords.size} skin temperature records to Health Connect")
-
-                for (record in healthRecords) {
-                    val temp = record.baseline?.inCelsius ?: 0.0
-                    Log.d(TAG, "  [${formatTime(record.startTime)}] $temp°C baseline, ${record.deltas.size} deltas")
-                }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to insert ${healthRecords.size} skin temperature records: ${e.message}", e)
                 for ((i, record) in healthRecords.withIndex()) {
@@ -590,12 +575,6 @@ class HealthConnectClient(private val context: Context) {
         } else {
             Metadata.activelyRecorded(device = device)
         }
-    }
-
-    private fun formatTime(instant: Instant): String {
-        val formatter = DateTimeFormatter.ofPattern("HH:mm")
-            .withZone(ZoneId.systemDefault())
-        return formatter.format(instant)
     }
 
     /**

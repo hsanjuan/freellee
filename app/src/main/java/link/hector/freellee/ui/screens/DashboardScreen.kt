@@ -58,7 +58,10 @@ import link.hector.freellee.data.DeviceStore.StepInterval
 import link.hector.freellee.data.TemperatureInterval
 import link.hector.freellee.data.currentTemperatureInterval
 import link.hector.freellee.data.previousTemperatureIntervals
+import link.hector.freellee.ui.charts.DashboardChartData
 import link.hector.freellee.ui.charts.StepsBarChart
+import link.hector.freellee.ui.charts.StepsChartData
+import link.hector.freellee.ui.charts.TemperatureChartData
 import link.hector.freellee.ui.charts.TemperatureLineChart
 import link.hector.freellee.ui.components.WatchStatusIndicator
 import link.hector.freellee.ui.theme.AccentAmber
@@ -87,6 +90,7 @@ fun DashboardScreen(
     onSync: () -> Unit,
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val chartData by viewModel.chartData.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val bleState by viewModel.connectionState.collectAsState()
     val hasPairedDevice by viewModel.hasPairedDevice.collectAsState()
@@ -158,6 +162,7 @@ fun DashboardScreen(
 
             UnifiedDashboard(
                 state = dashboardState,
+                chartData = chartData,
             ) {
                 WatchStatusIndicator(
                     uiState = uiState,
@@ -174,6 +179,7 @@ fun DashboardScreen(
 @Composable
 private fun UnifiedDashboard(
     state: DashboardUiState.Ready?,
+    chartData: DashboardChartData,
     statusIndicator: @Composable () -> Unit,
 ) {
     val dailySteps = state?.steps ?: 0
@@ -219,8 +225,7 @@ private fun UnifiedDashboard(
                 dailySteps = dailySteps,
                 weeklySteps = weeklySteps,
                 lastInterval = lastStepInterval,
-                stepIntervals = stepIntervals,
-                nowEpochSecond = nowEpochSecond,
+                chartData = chartData.steps,
             )
         }
 
@@ -229,8 +234,7 @@ private fun UnifiedDashboard(
                 current = currentTemperature,
                 previous = previousTemperatures,
                 lastRecord = lastTemperature,
-                readings = temperatureReadings,
-                nowEpochSecond = nowEpochSecond,
+                chartData = chartData.temperature,
             )
         }
 
@@ -248,8 +252,7 @@ private fun StepsSection(
     dailySteps: Int,
     weeklySteps: Int,
     lastInterval: StepInterval?,
-    stepIntervals: List<StepInterval>,
-    nowEpochSecond: Long,
+    chartData: StepsChartData,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -271,8 +274,7 @@ private fun StepsSection(
 
             Spacer(Modifier.height(16.dp))
             StepsBarChart(
-                intervals = stepIntervals,
-                nowEpochSecond = nowEpochSecond,
+                data = chartData,
                 modifier = Modifier.fillMaxWidth(),
             )
 
@@ -346,8 +348,7 @@ private fun TemperatureSection(
     current: TemperatureInterval,
     previous: List<TemperatureInterval>,
     lastRecord: HistoryEntry?,
-    readings: List<RecordItem>,
-    nowEpochSecond: Long,
+    chartData: TemperatureChartData,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -369,8 +370,7 @@ private fun TemperatureSection(
 
             Spacer(Modifier.height(16.dp))
             TemperatureLineChart(
-                records = readings,
-                nowEpochSecond = nowEpochSecond,
+                data = chartData,
                 modifier = Modifier.fillMaxWidth(),
             )
 

@@ -216,9 +216,6 @@ class DeviceStore(private val context: Context) {
     /** Persist step intervals for a device on a specific date. */
     suspend fun saveStepIntervals(macAddress: String, dateKey: String, intervals: List<StepInterval>) {
         Log.d(TAG, "saveStepIntervals: mac=$macAddress, date=$dateKey, count=${intervals.size}")
-        intervals.forEachIndexed { i, it ->
-            Log.d(TAG, "  save interval[$i]: tStart=${it.tStart}, steps=${it.steps}")
-        }
         context.deviceStore.edit { prefs ->
             val existingJson = prefs[prefKey("step_intervals", macAddress)]?.let { json ->
                 parseJsonArray(json) { obj ->

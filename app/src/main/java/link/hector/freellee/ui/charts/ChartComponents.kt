@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -99,6 +100,9 @@ internal fun ChartYAxis(
         fontSize = 10.sp,
     )
     val textMeasurer = rememberTextMeasurer()
+    val labelLayouts = remember(ticks, labelStyle, textMeasurer) {
+        ticks.map { textMeasurer.measure(labelFor(it), labelStyle) }
+    }
 
     Canvas(modifier = modifier.width(width).fillMaxHeight()) {
         val top = ChartTopPadding.toPx()
@@ -106,9 +110,9 @@ internal fun ChartYAxis(
         val plotHeight = (bottom - top).coerceAtLeast(0f)
         val range = (valueMax - valueMin).coerceAtLeast(0.0001)
 
-        ticks.forEach { value ->
+        ticks.forEachIndexed { index, value ->
             val y = bottom - ((value - valueMin) / range * plotHeight).toFloat()
-            val labelLayout = textMeasurer.measure(labelFor(value), labelStyle)
+            val labelLayout = labelLayouts[index]
             drawText(
                 textLayoutResult = labelLayout,
                 topLeft = Offset(

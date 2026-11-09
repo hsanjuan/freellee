@@ -37,21 +37,17 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import link.hector.freellee.data.DeviceStore.RecordItem
 import link.hector.freellee.ui.theme.AccentAmber
 import link.hector.freellee.ui.theme.AccentPurple
 import link.hector.freellee.ui.theme.AccentTeal
 import link.hector.freellee.ui.theme.TextSecondary
 import link.hector.freellee.ui.theme.TextTertiary
-import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import java.time.temporal.ChronoUnit
 import java.util.Locale
 import kotlin.math.roundToInt
 
-private const val TEMPERATURE_HOURS = 24
 private val TEMPERATURE_Y_AXIS_WIDTH = 44.dp
 
 /**
@@ -60,42 +56,16 @@ private val TEMPERATURE_Y_AXIS_WIDTH = 44.dp
  */
 @Composable
 fun TemperatureLineChart(
-    records: List<RecordItem>,
-    nowEpochSecond: Long,
+    data: TemperatureChartData,
     modifier: Modifier = Modifier,
 ) {
     val zone = remember { ZoneId.systemDefault() }
-    val anchorHour = remember(nowEpochSecond, zone) {
-        Instant.ofEpochSecond(nowEpochSecond)
-            .atZone(zone)
-            .truncatedTo(ChronoUnit.HOURS)
-            .plusHours(1)
-            .toEpochSecond()
-    }
-    val earliestHour = remember(records, zone) {
-        records.minOfOrNull {
-            Instant.ofEpochSecond(it.tStart).atZone(zone).truncatedTo(ChronoUnit.HOURS).toEpochSecond()
-        }
-    }
-    val totalHours = remember(earliestHour, anchorHour) {
-        val firstHour = earliestHour ?: anchorHour
-        val storedHours = Duration.between(
-            Instant.ofEpochSecond(firstHour),
-            Instant.ofEpochSecond(anchorHour),
-        ).toHours().toInt()
-        maxOf(storedHours, TEMPERATURE_HOURS)
-    }
-    val windowStart = shiftHours(anchorHour, -totalHours.toLong(), zone)
-
-    val points = remember(records, anchorHour, totalHours, zone) {
-        hourlyTemperatureWindow(records, anchorHour, totalHours, zone)
-    }
-    val hourlyAverages = remember(records, anchorHour, totalHours, zone) {
-        hourlyAverageWindow(records, anchorHour, totalHours, zone)
-    }
-    val baselines = remember(records, windowStart, anchorHour, zone) {
-        temperatureBaselineSegments(records, windowStart, anchorHour, zone)
-    }
+    val points = data.points
+    val hourlyAverages = data.hourlyAverages
+    val baselines = data.baselines
+    val windowStart = data.windowStartEpochSecond
+    val endHour = data.endHourEpochSecond
+    val totalHours = data.totalHours
 
     val allValues = buildList {
         points.mapNotNullTo(this) { it.averageCelsius }
@@ -126,6 +96,16 @@ fun TemperatureLineChart(
     val timeFormatter = remember(zone) {
         DateTimeFormatter.ofPattern("HH:mm", Locale.getDefault()).withZone(zone)
     }
+    val xTickLabels = remember(points, labelStyle, textMeasurer, timeFormatter, zone) {
+        points.mapNotNull { point ->
+            val localHour = Instant.ofEpochSecond(point.startEpochSecond).atZone(zone).hour
+            if (localHour % 6 != 0) return@mapNotNull null
+            point.startEpochSecond to textMeasurer.measure(
+                timeFormatter.format(Instant.ofEpochSecond(point.startEpochSecond)),
+                labelStyle,
+            )
+        }
+    }
 
     BoxWithConstraints(
         modifier = modifier
@@ -137,7 +117,7 @@ fun TemperatureLineChart(
         val viewportWidthPx = with(density) {
             (maxWidth - TEMPERATURE_Y_AXIS_WIDTH).toPx()
         }.coerceAtLeast(1f)
-        val hourWidthPx = viewportWidthPx / TEMPERATURE_HOURS
+        val hourWidthPx = viewportWidthPx / TEMPERATURE_WINDOW_HOURS
         val fullWidthPx = hourWidthPx * totalHours
         val fullWidth = with(density) { fullWidthPx.toDp() }
 
@@ -177,7 +157,7 @@ fun TemperatureLineChart(
                             val top = ChartTopPadding.toPx()
                             val bottom = size.height - ChartBottomPadding.toPx()
                             val plotHeight = (bottom - top).coerceAtLeast(0f)
-                            val spanSeconds = (anchorHour - windowStart).toFloat().coerceAtLeast(1f)
+                            val spanSeconds = (endHour - windowStart).toFloat().coerceAtLeast(1f)
                             val axisRange = (valueMax - valueMin).coerceAtLeast(0.0001)
 
                             fun xFor(epochSecond: Long): Float =
@@ -196,23 +176,13 @@ fun TemperatureLineChart(
                                 )
                             }
 
-                            points.forEach { point ->
-                                val localHour = Instant.ofEpochSecond(point.startEpochSecond)
-                                    .atZone(zone)
-                                    .hour
-                                if (localHour % 6 != 0) return@forEach
-                                val x = xFor(point.startEpochSecond)
+                            xTickLabels.forEach { (epochSecond, labelLayout) ->
+                                val x = xFor(epochSecond)
                                 drawLine(
                                     color = gridColor,
                                     start = Offset(x, top),
                                     end = Offset(x, bottom),
                                     strokeWidth = 1.dp.toPx(),
-                                )
-                                val labelLayout = textMeasurer.measure(
-                                    timeFormatter.format(
-                                        Instant.ofEpochSecond(point.startEpochSecond),
-                                    ),
-                                    labelStyle,
                                 )
                                 drawText(
                                     textLayoutResult = labelLayout,

@@ -34,22 +34,17 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import link.hector.freellee.data.DeviceStore.StepInterval
 import link.hector.freellee.ui.theme.AccentGreen
 import link.hector.freellee.ui.theme.TextSecondary
 import link.hector.freellee.ui.theme.TextTertiary
-import java.time.Instant
 import java.time.LocalDate
-import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import java.time.temporal.ChronoUnit
 import java.util.Locale
 import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.min
 import kotlin.math.roundToInt
 
-private const val STEP_DAYS = 7
 private val STEP_Y_AXIS_WIDTH = 40.dp
 
 /**
@@ -59,29 +54,15 @@ private val STEP_Y_AXIS_WIDTH = 40.dp
  */
 @Composable
 fun StepsBarChart(
-    intervals: List<StepInterval>,
-    nowEpochSecond: Long,
+    data: StepsChartData,
     modifier: Modifier = Modifier,
 ) {
-    val zone = remember { ZoneId.systemDefault() }
-    val today = remember(nowEpochSecond, zone) {
-        Instant.ofEpochSecond(nowEpochSecond).atZone(zone).toLocalDate()
-    }
-    val oldestDate = remember(intervals, zone) {
-        intervals.minOfOrNull { Instant.ofEpochSecond(it.tStart).atZone(zone).toLocalDate() }
-    }
-    val totalDays = remember(oldestDate, today) {
-        val oldest = oldestDate ?: today
-        maxOf(ChronoUnit.DAYS.between(oldest, today).toInt() + 1, STEP_DAYS)
-    }
-    val days = remember(intervals, today, totalDays, zone) {
-        dailyStepsWindow(intervals, today, totalDays, zone)
-    }
-    val reference = remember(intervals, nowEpochSecond) {
-        rollingDailyAverageSteps(intervals, nowEpochSecond)
-    }
-
-    val maxValue = maxOf(days.maxOf { it.steps }.toDouble(), reference ?: 0.0)
+    val days = data.days
+    val reference = data.referenceAverage
+    val maxValue = maxOf(
+        days.maxOfOrNull { it.steps }?.toDouble() ?: 0.0,
+        reference ?: 0.0,
+    )
     val ticks = stepsAxisTicks(maxValue)
     val axisMax = ticks.last().takeIf { it > 0.0 } ?: 1.0
 
@@ -98,6 +79,9 @@ fun StepsBarChart(
         fontSize = 10.sp,
     )
     val textMeasurer = rememberTextMeasurer()
+    val dayLabelLayouts = remember(days, labelStyle, textMeasurer) {
+        days.map { textMeasurer.measure(it.date.dayOfMonth.toString(), labelStyle) }
+    }
     val gridColor = TextTertiary.copy(alpha = 0.18f)
     val barColor = AccentGreen
     val referenceColor = TextSecondary
@@ -106,13 +90,17 @@ fun StepsBarChart(
         modifier = modifier
             .fillMaxWidth()
             .semantics {
-                contentDescription = "Daily steps bar chart, ${days.first().date} to ${days.last().date}"
+                contentDescription = if (days.isEmpty()) {
+                    "Daily steps bar chart"
+                } else {
+                    "Daily steps bar chart, ${days.first().date} to ${days.last().date}"
+                }
             },
     ) {
         val viewportWidthPx = with(density) {
             (maxWidth - STEP_Y_AXIS_WIDTH).toPx()
         }.coerceAtLeast(1f)
-        val slotWidthPx = viewportWidthPx / STEP_DAYS
+        val slotWidthPx = viewportWidthPx / STEPS_WINDOW_DAYS
         val fullWidth = with(density) {
             (slotWidthPx * days.size).toDp()
         }
@@ -166,10 +154,7 @@ fun StepsBarChart(
                             days.forEachIndexed { index, day ->
                                 val slotStart = left + slotWidth * index
                                 val centerX = slotStart + slotWidth / 2f
-                                val labelLayout = textMeasurer.measure(
-                                    day.date.dayOfMonth.toString(),
-                                    labelStyle,
-                                )
+                                val labelLayout = dayLabelLayouts[index]
                                 drawText(
                                     textLayoutResult = labelLayout,
                                     topLeft = Offset(
@@ -216,7 +201,7 @@ fun StepsBarChart(
                         }
                     }
 
-                    if (intervals.isEmpty()) {
+                    if (days.all { it.steps == 0 }) {
                         Text(
                             text = "No step data yet",
                             style = MaterialTheme.typography.bodySmall,

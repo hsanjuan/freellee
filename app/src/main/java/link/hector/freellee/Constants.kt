@@ -6,3 +6,6 @@ const val BLE_WATCH_NAME_PREFIX = "Ollee"
 
 /** Number of days of step intervals kept in the local store. */
 const val STEP_RETENTION_DAYS = 30L
+
+/** Number of days of skin-temperature records kept in the local store. */
+const val TEMPERATURE_RETENTION_DAYS = 15L

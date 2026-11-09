@@ -96,6 +96,26 @@ class ChartDataTest {
     }
 
     @Test
+    fun `hourly bucketing handles non-UTC offsets`() {
+        val result = hourlyTemperatureWindow(
+            records = listOf(temperature("2024-01-10T10:15:00Z", 3_100)),
+            endEpochSecond = epoch("2024-01-10T12:00:00Z"),
+            hourCount = 3,
+            zone = ZoneId.of("Europe/Paris"),
+        )
+
+        assertEquals(
+            listOf(
+                epoch("2024-01-10T09:00:00Z"),
+                epoch("2024-01-10T10:00:00Z"),
+                epoch("2024-01-10T11:00:00Z"),
+            ),
+            result.map { it.startEpochSecond },
+        )
+        assertEquals(31.0, result[1].averageCelsius!!, 0.001)
+    }
+
+    @Test
     fun `hourlyAverageWindow uses earlier days at the same clock hour`() {
         val result = hourlyAverageWindow(
             records = listOf(
@@ -141,6 +161,58 @@ class ChartDataTest {
         assertEquals(epoch("2024-01-10T12:00:00Z"), morning.endEpochSecond)
         assertEquals(34.0, afternoon.celsius, 0.001)
         assertEquals(epoch("2024-01-10T18:00:00Z"), afternoon.endEpochSecond)
+    }
+
+    @Test
+    fun `buildStepsChartData prepares at least seven days and the rolling average`() {
+        val data = buildStepsChartData(
+            intervals = listOf(
+                step("2024-01-08T10:00:00Z", 100),
+                step("2024-01-10T10:00:00Z", 50),
+            ),
+            nowEpochSecond = epoch("2024-01-10T12:00:00Z"),
+            zone = zone,
+        )
+
+        assertEquals(7, data.days.size)
+        assertEquals(LocalDate.of(2024, 1, 4), data.days.first().date)
+        assertEquals(LocalDate.of(2024, 1, 10), data.days.last().date)
+        assertEquals(50, data.days.last().steps)
+        assertEquals(150.0 / 7.0, data.referenceAverage!!, 0.001)
+    }
+
+    @Test
+    fun `buildTemperatureChartData covers the whole stored range`() {
+        val data = buildTemperatureChartData(
+            records = listOf(
+                temperature("2024-01-01T10:15:00Z", 3_000),
+                temperature("2024-01-10T10:15:00Z", 3_200),
+            ),
+            nowEpochSecond = epoch("2024-01-10T12:00:00Z"),
+            zone = zone,
+        )
+
+        assertEquals(epoch("2024-01-10T13:00:00Z"), data.endHourEpochSecond)
+        assertEquals(epoch("2024-01-01T10:00:00Z"), data.windowStartEpochSecond)
+        assertEquals(219, data.totalHours)
+        assertEquals(219, data.points.size)
+        assertEquals(219, data.hourlyAverages.size)
+    }
+
+    @Test
+    fun `empty data produces a full empty viewport`() {
+        val data = buildDashboardChartData(
+            stepIntervals = emptyList(),
+            temperatureRecords = emptyList(),
+            nowEpochSecond = epoch("2024-01-10T12:00:00Z"),
+            zone = zone,
+        )
+
+        assertEquals(7, data.steps.days.size)
+        assertNull(data.steps.referenceAverage)
+        assertEquals(24, data.temperature.totalHours)
+        assertEquals(epoch("2024-01-09T13:00:00Z"), data.temperature.windowStartEpochSecond)
+        assertEquals(24, data.temperature.points.size)
     }
 
     @Test

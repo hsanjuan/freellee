@@ -26,11 +26,17 @@ import java.time.ZoneId
 import link.hector.freellee.BLE_CONNECT_TIMEOUT_MS
 import link.hector.freellee.DEFAULT_WATCH_NAME
 import link.hector.freellee.STEP_RETENTION_DAYS
+import link.hector.freellee.TEMPERATURE_RETENTION_DAYS
 import link.hector.freellee.data.DeviceStore
 import link.hector.freellee.data.DeviceStore.RecordItem
 import link.hector.freellee.data.DeviceStore.StepInterval
 import link.hector.freellee.data.HealthConnectClient
 import link.hector.freellee.data.PairedDevice
+import link.hector.freellee.ui.charts.DashboardChartData
+import link.hector.freellee.ui.charts.buildDashboardChartData
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.withContext
 
 private const val VM_TAG = "OlleeViewModel"
 
@@ -80,6 +86,20 @@ class OlleeViewModel(
     private val _uiState = MutableStateFlow<DashboardUiState>(DashboardUiState.Disconnected)
     val uiState: StateFlow<DashboardUiState> = _uiState.asStateFlow()
 
+    /**
+     * Chart inputs are prepared off the UI thread and cached for the lifetime of the ViewModel.
+     * Switching tabs therefore reuses the prepared graphs instead of rebuilding them on the main
+     * thread each time the Data page is composed.
+     */
+    private val _chartData = MutableStateFlow(
+        buildDashboardChartData(
+            stepIntervals = emptyList(),
+            temperatureRecords = emptyList(),
+            nowEpochSecond = Instant.now().epochSecond,
+        ),
+    )
+    val chartData: StateFlow<DashboardChartData> = _chartData.asStateFlow()
+
     val connectionState: StateFlow<ConnectionState> = repository.connectionState
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ConnectionState.DISCONNECTED)
 
@@ -104,6 +124,38 @@ class OlleeViewModel(
         // to Health Connect are skipped individually when their permission is not granted.
         // Running on IO keeps cache decoding (large JSON blobs) off the main thread.
         viewModelScope.launch(Dispatchers.IO) { loadCachedData() }
+
+        // Keep chart preparation off the UI thread as well. The pure aggregation work runs on
+        // Dispatchers.Default, and the resulting immutable snapshot is reused across tab switches.
+        viewModelScope.launch {
+            uiState
+                .filterIsInstance<DashboardUiState.Ready>()
+                .collectLatest { state ->
+                    val now = Instant.now().epochSecond
+                    val prepared = withContext(Dispatchers.Default) {
+                        val startedAt = System.nanoTime()
+                        buildDashboardChartData(
+                            stepIntervals = state.stepIntervals,
+                            temperatureRecords = state.temperatureRecords.map { history ->
+                                RecordItem(
+                                    type = 0,
+                                    tStart = history.watchTimestampStart,
+                                    tEnd = history.watchTimestampEnd,
+                                    value = history.value,
+                                    syncTime = history.syncTimestamp,
+                                )
+                            },
+                            nowEpochSecond = now,
+                        ).also {
+                            Log.d(
+                                VM_TAG,
+                                "Prepared chart data in ${(System.nanoTime() - startedAt) / 1_000_000}ms",
+                            )
+                        }
+                    }
+                    _chartData.value = prepared
+                }
+        }
     }
 
     suspend fun loadCachedData() {
@@ -322,9 +374,6 @@ class OlleeViewModel(
                 ) { /* in-memory during sync */ }
                 allRecords = recordsResult.records
                 Log.d(VM_TAG, "sync: got ${allRecords.size} records from watch (drained=${recordsResult.drained})")
-                allRecords.forEachIndexed { i, r ->
-                    Log.d(VM_TAG, "  record[$i]: type=${r.type}, tStart=${r.tStart}, tEnd=${r.tEnd}, value=${r.value}")
-                }
             } catch (e: Exception) {
                 Log.w(VM_TAG, "Record sync failed: ${e.message}")
             }
@@ -430,10 +479,10 @@ class OlleeViewModel(
 
             Log.d(VM_TAG, "sync: deduplicated temp ${rawTemperatureRecords.size} -> ${temperatureRecords.size}, hr ${rawHeartRateRecords.size} -> ${heartRateRecords.size}, counter ${rawCounterRecords.size} -> ${counterRecords.size}, stopwatch ${rawStopwatchRecords.size} -> ${stopwatchRecords.size}")
             if (rawStopwatchRecords.isNotEmpty()) {
-                Log.d(VM_TAG, "sync: raw stopwatch records: ${rawStopwatchRecords.map { "type=${it.type} tStart=${it.tStart} tEnd=${it.tEnd} value=${it.value}" }}")
+                Log.d(VM_TAG, "sync: ${rawStopwatchRecords.size} raw stopwatch records")
             }
             if (rawCounterRecords.isNotEmpty()) {
-                Log.d(VM_TAG, "sync: counter records: ${rawCounterRecords.map { "tStart=${it.tStart} value=${it.value}" }}")
+                Log.d(VM_TAG, "sync: ${rawCounterRecords.size} counter records")
             }
 
             _uiState.value = DashboardUiState.Syncing("Saving health data")
@@ -441,7 +490,7 @@ class OlleeViewModel(
             // Load existing records once, compute merged data in memory to avoid reloading later
             var existingTempRecords = deviceStore.getCachedTempRecords().first()
             // Prune existing temp records older than 15 days
-            val tempCutoffEpoch = now - 15 * 24 * 3600L
+            val tempCutoffEpoch = now - TEMPERATURE_RETENTION_DAYS * 24 * 3600L
             val existingTempPrunedCount = existingTempRecords.size
             existingTempRecords = existingTempRecords.filter { it.tStart >= tempCutoffEpoch }
             Log.d(VM_TAG, "sync: temp records existing pruned: ${existingTempPrunedCount} → ${existingTempRecords.size}")
