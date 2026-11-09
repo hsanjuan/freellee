@@ -1,0 +1,1 @@
+The Data tab is much faster. Charts are prepared in the background and reused when switching tabs, so the app no longer pauses while graph data is calculated. Step and temperature graphs also redraw quicker after a sync.
