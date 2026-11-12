@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
@@ -16,6 +17,7 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import org.json.JSONArray
 import org.json.JSONObject
+import java.time.LocalDate
 
 private const val TAG = "DeviceStore"
 
@@ -24,6 +26,14 @@ private fun recordTypeFromName(name: String): DeviceStore.RecordType =
         ?: DeviceStore.RecordType.EXERCISE
 
 private val Context.deviceStore: DataStore<Preferences> by preferencesDataStore(name = "devices")
+
+/** Last successful Health Connect writes, shown on the Settings screen. */
+data class HcWriteStats(
+    val temperatureEpochSecond: Long? = null,
+    val temperatureCount: Int = 0,
+    val sleepEpochSecond: Long? = null,
+    val sleepCount: Int = 0,
+)
 
 data class PairedDevice(
     val macAddress: String,
@@ -43,6 +53,8 @@ class DeviceStore(private val context: Context) {
     companion object {
         private val ACTIVE_KEY = stringPreferencesKey("active_device")
         private val TEMP_RECORDS_KEY = stringPreferencesKey("temp_records")
+        private val TEMP_AGGREGATES_KEY = stringPreferencesKey("temp_day_aggregates")
+        private val SLEEP_SESSIONS_KEY = stringPreferencesKey("sleep_sessions")
         private val HR_RECORDS_KEY = stringPreferencesKey("hr_records")
         private val COUNTER_RECORDS_KEY = stringPreferencesKey("counter_records")
         private val STOPWATCH_RECORDS_KEY = stringPreferencesKey("stopwatch_records")
@@ -51,6 +63,15 @@ class DeviceStore(private val context: Context) {
         private val PENDING_COUNTER_EVENTS_KEY = stringPreferencesKey("pending_counter_events")
         private val LAST_COUNTER_MEANING_KEY = stringPreferencesKey("last_counter_meaning")
         private val LAST_SYNC_TIME_KEY = longPreferencesKey("last_sync_time")
+        private val STEP_GOAL_KEY = intPreferencesKey("step_goal")
+        private val ADVANCED_MODE_KEY = stringPreferencesKey("advanced_mode")
+        private val SLEEP_HC_IDS_KEY = stringPreferencesKey("sleep_hc_record_ids")
+        private val SLEEP_HC_UUID_KEY = booleanPreferencesKey("sleep_hc_uuid_ids")
+        private val TEMP_HC_UUID_KEY = booleanPreferencesKey("temp_hc_uuid_ids_v2")
+        private val HC_TEMP_WRITE_EPOCH_KEY = longPreferencesKey("hc_temp_write_epoch")
+        private val HC_TEMP_WRITE_COUNT_KEY = intPreferencesKey("hc_temp_write_count")
+        private val HC_SLEEP_WRITE_EPOCH_KEY = longPreferencesKey("hc_sleep_write_epoch")
+        private val HC_SLEEP_WRITE_COUNT_KEY = intPreferencesKey("hc_sleep_write_count")
         private const val VOLTAGE_PREFIX = "voltage_"
     }
 
@@ -142,7 +163,7 @@ class DeviceStore(private val context: Context) {
     /** Persist temperature, heart rate, counter, and stopwatch records for the active device.
      *
      * The caller (ViewModel) has already performed the merge with existing records and applied
-     * any age-based pruning (e.g. 15-day cutoff). This function simply deduplicates and stores
+     * any age-based pruning (e.g. the raw retention cutoff). This function simply deduplicates and stores
      * the final list as-is.
      */
     suspend fun saveRecentRecords(
@@ -193,8 +214,123 @@ class DeviceStore(private val context: Context) {
         }
     }
 
+    private fun temperatureAggregatesToJson(items: List<TemperatureDayAggregate>): String =
+        listToJson(items) { item, obj ->
+            obj.put("date", item.date.toString())
+            obj.put("validCount", item.validCount)
+            obj.put("expectedCount", item.expectedCount)
+            obj.put("first", item.firstEpochSecond ?: JSONObject.NULL)
+            obj.put("last", item.lastEpochSecond ?: JSONObject.NULL)
+            obj.put(
+                "hourlyMedians",
+                JSONArray().apply {
+                    item.hourlyMedians.forEach { put(it ?: JSONObject.NULL) }
+                },
+            )
+            obj.put(
+                "hourlyCounts",
+                JSONArray().apply {
+                    item.hourlyCounts.forEach { put(it) }
+                },
+            )
+            obj.put(
+                "periodBaselines",
+                JSONObject().apply {
+                    item.periodBaselines.forEach { (period, value) -> put(period.name, value) }
+                },
+            )
+        }
+
+    private fun parseTemperatureAggregates(json: String?): List<TemperatureDayAggregate> {
+        if (json == null) return emptyList()
+        return parseJsonArray(json) { obj ->
+            val medians = obj.getJSONArray("hourlyMedians")
+            val counts = obj.getJSONArray("hourlyCounts")
+            val baselines = obj.optJSONObject("periodBaselines")
+            TemperatureDayAggregate(
+                date = LocalDate.parse(obj.getString("date")),
+                validCount = obj.optInt("validCount", 0),
+                expectedCount = obj.optInt("expectedCount", 0),
+                firstEpochSecond = if (obj.isNull("first")) null else obj.getLong("first"),
+                lastEpochSecond = if (obj.isNull("last")) null else obj.getLong("last"),
+                hourlyMedians = List(24) { index ->
+                    if (index >= medians.length() || medians.isNull(index)) {
+                        null
+                    } else {
+                        medians.getDouble(index)
+                    }
+                },
+                hourlyCounts = List(24) { index ->
+                    if (index >= counts.length()) 0 else counts.optInt(index, 0)
+                },
+                periodBaselines = buildMap {
+                    TemperaturePeriod.entries.forEach { period ->
+                        if (baselines?.has(period.name) == true) {
+                            put(period, baselines.getDouble(period.name))
+                        }
+                    }
+                },
+            )
+        }
+    }
+
+    private fun sleepSessionsToJson(items: List<SleepSession>): String =
+        listToJson(items) { session, obj ->
+            obj.put("id", session.id)
+            obj.put("start", session.startEpochSecond)
+            obj.put("end", session.endEpochSecond)
+            obj.put("kind", session.kind.name)
+            obj.put("confidence", session.confidence)
+            obj.put("source", session.source.name)
+            obj.put("dismissed", session.dismissed)
+        }
+
+    private fun parseSleepSessions(json: String?): List<SleepSession> {
+        if (json == null) return emptyList()
+        return parseJsonArray(json) { obj ->
+            SleepSession(
+                id = obj.getString("id"),
+                startEpochSecond = obj.getLong("start"),
+                endEpochSecond = obj.getLong("end"),
+                kind = SleepSessionKind.entries
+                    .firstOrNull { it.name == obj.optString("kind") }
+                    ?: SleepSessionKind.NAP,
+                confidence = obj.optDouble("confidence", 0.0),
+                source = SleepSessionSource.entries
+                    .firstOrNull { it.name == obj.optString("source") }
+                    ?: SleepSessionSource.DETECTED,
+                dismissed = obj.optBoolean("dismissed", false),
+            )
+        }
+    }
+
     /** Load cached temperature records. */
     fun getCachedTempRecords(): Flow<List<RecordItem>> = preferencesFlow(TEMP_RECORDS_KEY, ::parseRecordItems)
+
+    /**
+     * Load the long-term daily temperature aggregates. These outlive the raw 4-minute samples
+     * and carry the frozen per-day-part baselines used for Health Connect writes.
+     */
+    fun getTemperatureAggregates(): Flow<List<TemperatureDayAggregate>> =
+        preferencesFlow(TEMP_AGGREGATES_KEY, ::parseTemperatureAggregates)
+
+    /** Persist the long-term daily temperature aggregates. */
+    suspend fun saveTemperatureAggregates(aggregates: List<TemperatureDayAggregate>) {
+        context.deviceStore.edit { prefs ->
+            prefs[TEMP_AGGREGATES_KEY] = temperatureAggregatesToJson(aggregates)
+        }
+    }
+
+    /** Load detected and user-corrected sleep sessions. */
+    fun getSleepSessions(): Flow<List<SleepSession>> =
+        preferencesFlow(SLEEP_SESSIONS_KEY, ::parseSleepSessions)
+
+    /** Persist detected and user-corrected sleep sessions. */
+    suspend fun saveSleepSessions(sessions: List<SleepSession>) {
+        context.deviceStore.edit { prefs ->
+            prefs[SLEEP_SESSIONS_KEY] = sleepSessionsToJson(sessions)
+        }
+    }
 
     /** Load cached heart rate records. */
     fun getCachedHRRecords(): Flow<List<RecordItem>> = preferencesFlow(HR_RECORDS_KEY, ::parseRecordItems)
@@ -556,6 +692,90 @@ class DeviceStore(private val context: Context) {
     /** Load the timestamp of the last successful sync (epoch seconds). */
     fun getLastSyncTime(): Flow<Long?> = context.deviceStore.data
         .map { prefs -> prefs[LAST_SYNC_TIME_KEY] }
+
+    /** Persist the daily step goal read from the watch. */
+    suspend fun saveStepGoal(goal: Int) {
+        context.deviceStore.edit { prefs ->
+            prefs[STEP_GOAL_KEY] = goal
+        }
+    }
+
+    /** Last known daily step goal, or null before the first sync. */
+    fun getStepGoal(): Flow<Int?> = context.deviceStore.data
+        .map { prefs -> prefs[STEP_GOAL_KEY] }
+
+    /** How the user wants advanced (patched-firmware) features handled. */
+    fun getAdvancedMode(): Flow<AdvancedModeSetting> = context.deviceStore.data
+        .map { prefs ->
+            AdvancedModeSetting.entries
+                .firstOrNull { it.name == prefs[ADVANCED_MODE_KEY] }
+                ?: AdvancedModeSetting.AUTO
+        }
+        .distinctUntilChanged()
+
+    /** Persist the advanced-feature preference. */
+    suspend fun saveAdvancedMode(mode: AdvancedModeSetting) {
+        context.deviceStore.edit { prefs ->
+            prefs[ADVANCED_MODE_KEY] = mode.name
+        }
+    }
+
+    /** Sleep session ids previously written to Health Connect, so stale records can be removed. */
+    fun getWrittenSleepRecordIds(): Flow<Set<String>> =
+        preferencesFlow(SLEEP_HC_IDS_KEY) { json ->
+            if (json == null) emptySet() else parseJsonArray(json) { obj -> obj.getString("id") }.toSet()
+        }
+
+    /** Whether sleep records have been migrated to UUID client record ids. */
+    fun isSleepHcUuidMigrated(): Flow<Boolean> = context.deviceStore.data
+        .map { prefs -> prefs[SLEEP_HC_UUID_KEY] ?: false }
+        .distinctUntilChanged()
+
+    suspend fun setSleepHcUuidMigrated() {
+        context.deviceStore.edit { prefs -> prefs[SLEEP_HC_UUID_KEY] = true }
+    }
+
+    /** Whether skin temperature records have been migrated to UUID client record ids. */
+    fun isTempHcUuidMigrated(): Flow<Boolean> = context.deviceStore.data
+        .map { prefs -> prefs[TEMP_HC_UUID_KEY] ?: false }
+        .distinctUntilChanged()
+
+    suspend fun setTempHcUuidMigrated() {
+        context.deviceStore.edit { prefs -> prefs[TEMP_HC_UUID_KEY] = true }
+    }
+
+    /** Last successful Health Connect writes. */
+    fun getHcWriteStats(): Flow<HcWriteStats> = context.deviceStore.data
+        .map { prefs ->
+            HcWriteStats(
+                temperatureEpochSecond = prefs[HC_TEMP_WRITE_EPOCH_KEY],
+                temperatureCount = prefs[HC_TEMP_WRITE_COUNT_KEY] ?: 0,
+                sleepEpochSecond = prefs[HC_SLEEP_WRITE_EPOCH_KEY],
+                sleepCount = prefs[HC_SLEEP_WRITE_COUNT_KEY] ?: 0,
+            )
+        }
+        .distinctUntilChanged()
+
+    suspend fun saveHcTemperatureWrite(epochSecond: Long, count: Int) {
+        context.deviceStore.edit { prefs ->
+            prefs[HC_TEMP_WRITE_EPOCH_KEY] = epochSecond
+            prefs[HC_TEMP_WRITE_COUNT_KEY] = count
+        }
+    }
+
+    suspend fun saveHcSleepWrite(epochSecond: Long, count: Int) {
+        context.deviceStore.edit { prefs ->
+            prefs[HC_SLEEP_WRITE_EPOCH_KEY] = epochSecond
+            prefs[HC_SLEEP_WRITE_COUNT_KEY] = count
+        }
+    }
+
+    /** Persist the sleep session ids currently present in Health Connect. */
+    suspend fun saveWrittenSleepRecordIds(ids: Set<String>) {
+        context.deviceStore.edit { prefs ->
+            prefs[SLEEP_HC_IDS_KEY] = listToJson(ids.toList()) { id, obj -> obj.put("id", id) }
+        }
+    }
 
     // -- Internal helpers --
 

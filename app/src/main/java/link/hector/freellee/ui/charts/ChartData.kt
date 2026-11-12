@@ -6,7 +6,17 @@ import link.hector.freellee.TEMPERATURE_RETENTION_DAYS
 import link.hector.freellee.data.DeviceStore.RecordItem
 import link.hector.freellee.data.DeviceStore.StepInterval
 import link.hector.freellee.data.MIN_VALID_TEMPERATURE
+import link.hector.freellee.data.SleepInsights
+import link.hector.freellee.data.SleepSession
+import link.hector.freellee.data.TemperatureDayAggregate
+import link.hector.freellee.data.TemperatureInsights
 import link.hector.freellee.data.TemperaturePeriod
+import link.hector.freellee.data.buildSleepInsights
+import link.hector.freellee.data.buildTemperatureDayAggregates
+import link.hector.freellee.data.buildTemperatureInsights
+import link.hector.freellee.data.inferStepIntervalSeconds
+import link.hector.freellee.data.inferTemperatureSampleSeconds
+import link.hector.freellee.data.medianOrNull
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
@@ -25,17 +35,40 @@ const val TEMPERATURE_WINDOW_HOURS = 24
 data class StepsChartData(
     val days: List<DailyStepsPoint>,
     val referenceAverage: Double?,
+    val today: LocalDate,
+    /** Today's step intervals since 00:00, sorted by start. */
+    val todayIntervals: List<TodayStepInterval>,
 )
 
-/** Everything the temperature chart needs to draw, prepared off the UI thread. */
+/** One interval in today's compact steps chart. */
+@Immutable
+data class TodayStepInterval(
+    val startEpochSecond: Long,
+    val endEpochSecond: Long,
+    val steps: Int,
+)
+
+/** Everything the temperature chart and summary card need, prepared off the UI thread. */
 @Immutable
 data class TemperatureChartData(
     val points: List<HourlyTemperaturePoint>,
-    val hourlyAverages: List<HourlyAveragePoint>,
+    /** Gaps with no valid readings; the watch may not have been worn or the values were rejected. */
+    val notWornRanges: List<NotWornRange>,
+    /** Time since the last successful sync; these readings simply have not arrived yet. */
+    val unsyncedRange: NotWornRange?,
+    /** The personal reference profile, drawn as a dashed step line. */
     val baselines: List<BaselineSegment>,
+    val insights: TemperatureInsights,
     val windowStartEpochSecond: Long,
     val endHourEpochSecond: Long,
     val totalHours: Int,
+)
+
+/** A stretch with no valid temperature readings, shaded on the chart. */
+@Immutable
+data class NotWornRange(
+    val startEpochSecond: Long,
+    val endEpochSecond: Long,
 )
 
 /** Prepared chart inputs for the Data tab. */
@@ -43,6 +76,7 @@ data class TemperatureChartData(
 data class DashboardChartData(
     val steps: StepsChartData,
     val temperature: TemperatureChartData,
+    val sleep: SleepInsights,
 )
 
 /** One bar in the daily steps chart. */
@@ -50,22 +84,19 @@ data class DashboardChartData(
 data class DailyStepsPoint(
     val date: LocalDate,
     val steps: Int,
+    /** False when the day has no synced intervals, so "no data" differs from a genuine zero. */
+    val hasData: Boolean,
 )
 
-/** One hourly bucket in the skin-temperature chart. A null average means no valid reading. */
+/**
+ * One hourly bucket in the skin-temperature chart. The value is the median of the valid readings
+ * in the bucket; a null median means no valid reading.
+ */
 @Immutable
 data class HourlyTemperaturePoint(
     val startEpochSecond: Long,
     val endEpochSecond: Long,
-    val averageCelsius: Double?,
-)
-
-/** The typical value for one clock hour, based on earlier readings at that same hour. */
-@Immutable
-data class HourlyAveragePoint(
-    val startEpochSecond: Long,
-    val endEpochSecond: Long,
-    val averageCelsius: Double?,
+    val medianCelsius: Double?,
 )
 
 /** A horizontal baseline segment for one day part. [endEpochSecond] is exclusive. */
@@ -85,9 +116,27 @@ fun buildDashboardChartData(
     temperatureRecords: List<RecordItem>,
     nowEpochSecond: Long,
     zone: ZoneId = ZoneId.systemDefault(),
+    temperatureAggregates: List<TemperatureDayAggregate> = emptyList(),
+    sleepSessions: List<SleepSession> = emptyList(),
+    lastSyncEpochSecond: Long? = null,
 ): DashboardChartData = DashboardChartData(
     steps = buildStepsChartData(stepIntervals, nowEpochSecond, zone),
-    temperature = buildTemperatureChartData(temperatureRecords, nowEpochSecond, zone),
+    temperature = buildTemperatureChartData(
+        records = temperatureRecords,
+        nowEpochSecond = nowEpochSecond,
+        zone = zone,
+        aggregates = temperatureAggregates,
+        lastSyncEpochSecond = lastSyncEpochSecond,
+    ),
+    sleep = buildSleepInsights(
+        sessions = sleepSessions,
+        temperatureRecords = temperatureRecords,
+        aggregates = temperatureAggregates,
+        nowEpochSecond = nowEpochSecond,
+        zone = zone,
+        sampleSeconds = inferTemperatureSampleSeconds(temperatureRecords),
+        stepIntervalSeconds = inferStepIntervalSeconds(stepIntervals),
+    ),
 )
 
 fun buildStepsChartData(
@@ -103,9 +152,18 @@ fun buildStepsChartData(
         ChronoUnit.DAYS.between(oldestDate ?: today, today).toInt() + 1,
         STEPS_WINDOW_DAYS,
     ).coerceAtMost(STEP_RETENTION_DAYS.toInt())
+    val todayStart = today.atStartOfDay(zone).toEpochSecond()
+    val tomorrowStart = today.plusDays(1).atStartOfDay(zone).toEpochSecond()
     return StepsChartData(
         days = dailyStepsWindow(intervals, today, totalDays, zone),
-        referenceAverage = rollingDailyAverageSteps(intervals, nowEpochSecond),
+        referenceAverage = rollingDailyAverageSteps(intervals, nowEpochSecond, zone = zone),
+        today = today,
+        todayIntervals = intervals
+            .asSequence()
+            .filter { it.tStart >= todayStart && it.tStart < tomorrowStart && it.steps > 0 }
+            .sortedBy { it.tStart }
+            .map { TodayStepInterval(it.tStart, it.tEnd, it.steps) }
+            .toList(),
     )
 }
 
@@ -113,6 +171,8 @@ fun buildTemperatureChartData(
     records: List<RecordItem>,
     nowEpochSecond: Long,
     zone: ZoneId = ZoneId.systemDefault(),
+    aggregates: List<TemperatureDayAggregate> = emptyList(),
+    lastSyncEpochSecond: Long? = null,
 ): TemperatureChartData {
     val endHour = Instant.ofEpochSecond(nowEpochSecond)
         .atZone(zone)
@@ -131,14 +191,94 @@ fun buildTemperatureChartData(
         (TEMPERATURE_RETENTION_DAYS * 24).toInt(),
     )
     val windowStart = shiftHours(endHour, -totalHours.toLong(), zone)
+    val effectiveAggregates = aggregates.ifEmpty {
+        buildTemperatureDayAggregates(
+            records = records,
+            nowEpochSecond = nowEpochSecond,
+            zone = zone,
+        )
+    }
+    val insights = buildTemperatureInsights(
+        aggregates = effectiveAggregates,
+        nowEpochSecond = nowEpochSecond,
+        zone = zone,
+        syncedUntilEpochSecond = lastSyncEpochSecond,
+    )
+    val profile = insights.referenceProfile
+    val baselines = if (profile.any { it != null }) {
+        temperatureReferenceSegments(profile, windowStart, endHour, zone)
+    } else {
+        temperatureBaselineSegments(records, windowStart, endHour, zone)
+    }
     return TemperatureChartData(
         points = hourlyTemperatureWindow(records, endHour, totalHours, zone),
-        hourlyAverages = hourlyAverageWindow(records, endHour, totalHours, zone),
-        baselines = temperatureBaselineSegments(records, windowStart, endHour, zone),
+        notWornRanges = notWornRanges(records, windowStart, endHour),
+        unsyncedRange = unsyncedRange(
+            records = records,
+            windowStart = windowStart,
+            nowEpochSecond = nowEpochSecond,
+            lastSyncEpochSecond = lastSyncEpochSecond,
+        ),
+        baselines = baselines,
+        insights = insights,
         windowStartEpochSecond = windowStart,
         endHourEpochSecond = endHour,
         totalHours = totalHours,
     )
+}
+
+/**
+ * The stretch between the last successful sync and now. Those readings have not arrived yet,
+ * so the chart shows them separately from genuine gaps instead of flagging them as missing.
+ */
+private fun unsyncedRange(
+    records: List<RecordItem>,
+    windowStart: Long,
+    nowEpochSecond: Long,
+    lastSyncEpochSecond: Long?,
+): NotWornRange? {
+    val lastSync = lastSyncEpochSecond ?: return null
+    val start = lastSync.coerceIn(windowStart, nowEpochSecond)
+    if (start >= nowEpochSecond) return null
+    val sampleSeconds = inferTemperatureSampleSeconds(records).toLong()
+    // Ignore a sync that is only one or two samples old; that is normal live data.
+    val threshold = (sampleSeconds * 2).coerceIn(8L * 60L, 60L * 60L)
+    return if (nowEpochSecond - start >= threshold) {
+        NotWornRange(startEpochSecond = start, endEpochSecond = nowEpochSecond)
+    } else {
+        null
+    }
+}
+
+/**
+ * Interior gaps between valid readings that are long enough to mean the watch was off the
+ * wrist. The threshold scales with the sampling interval, so hourly firmware does not light up
+ * every normal one-hour gap.
+ */
+private fun notWornRanges(
+    records: List<RecordItem>,
+    windowStart: Long,
+    windowEnd: Long,
+): List<NotWornRange> {
+    val starts = records
+        .asSequence()
+        .filter { it.value >= MIN_VALID_TEMPERATURE }
+        .map { it.tStart }
+        .distinct()
+        .sorted()
+        .filter { it >= windowStart && it < windowEnd }
+        .toList()
+    if (starts.size < 2) return emptyList()
+
+    val sampleSeconds = inferTemperatureSampleSeconds(records).toLong()
+    val threshold = (sampleSeconds * 3).coerceIn(30L * 60L, 3L * 3_600L)
+    return buildList {
+        starts.zipWithNext { previous, next ->
+            if (next - previous > threshold) {
+                add(NotWornRange(previous + sampleSeconds, next))
+            }
+        }
+    }
 }
 
 /**
@@ -155,12 +295,14 @@ fun dailyStepsWindow(
     require(dayCount > 0)
     val startDate = endDate.minusDays((dayCount - 1).toLong())
     val totals = LongArray(dayCount)
+    val present = BooleanArray(dayCount)
 
     intervals.forEach { interval ->
         val date = Instant.ofEpochSecond(interval.tStart).atZone(zone).toLocalDate()
         val index = ChronoUnit.DAYS.between(startDate, date).toInt()
         if (index in 0 until dayCount) {
             totals[index] += interval.steps.toLong()
+            present[index] = true
         }
     }
 
@@ -168,30 +310,38 @@ fun dailyStepsWindow(
         DailyStepsPoint(
             date = startDate.plusDays(index.toLong()),
             steps = totals[index].coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+            hasData = present[index],
         )
     }
 }
 
 /**
- * Daily average over the rolling [days]-day window ending at [nowEpochSecond].
- * Returns null when the window has no step data, so the chart can hide the reference line.
+ * Average steps over the previous [days] complete days, excluding today. Today is still in
+ * progress and would drag the average down. Returns null when none of those days have data.
  */
 fun rollingDailyAverageSteps(
     intervals: List<StepInterval>,
     nowEpochSecond: Long,
     days: Int = 7,
+    zone: ZoneId = ZoneId.systemDefault(),
 ): Double? {
     require(days > 0)
-    val windowStart = nowEpochSecond - days.toLong() * SECONDS_PER_DAY
-    val total = intervals
-        .filter { it.tStart in windowStart..nowEpochSecond }
-        .sumOf { it.steps.toLong() }
-    return if (total > 0) total.toDouble() / days else null
+    val today = Instant.ofEpochSecond(nowEpochSecond).atZone(zone).toLocalDate()
+    val previous = dailyStepsWindow(
+        intervals = intervals,
+        endDate = today.minusDays(1),
+        dayCount = days,
+        zone = zone,
+    ).filter { it.hasData }
+    if (previous.isEmpty()) return null
+    return previous.sumOf { it.steps.toDouble() } / previous.size
 }
 
 /**
- * Hourly averages for the [hourCount] hours ending at [endEpochSecond] (exclusive).
- * A null average marks an hour with no valid reading.
+ * Hourly medians for the [hourCount] hours ending at [endEpochSecond] (exclusive).
+ *
+ * The median resists the short spikes that are common in wrist temperature; the mean does not.
+ * A null median marks an hour with no valid reading.
  */
 fun hourlyTemperatureWindow(
     records: List<RecordItem>,
@@ -208,113 +358,59 @@ fun hourlyTemperatureWindow(
     val localHours = LocalHourBucketer(zone, windowStartEpoch, windowEndEpoch - 1)
 
     // Bucket once instead of scanning the full record list for every visible hour.
-    val sums = HashMap<Long, DoubleArray>()
+    val valuesByHour = HashMap<Long, MutableList<Double>>()
     records.forEach { record ->
         if (record.value < MIN_VALID_TEMPERATURE) return@forEach
         if (record.tStart < windowStartEpoch || record.tStart >= windowEndEpoch) return@forEach
         val bucketStart = localHours.hourStart(record.tStart)
-        val accumulator = sums.getOrPut(bucketStart) { DoubleArray(2) }
-        accumulator[0] += record.value / 100.0
-        accumulator[1] += 1.0
+        valuesByHour.getOrPut(bucketStart) { mutableListOf() } += record.value / 100.0
     }
 
     return (hourCount downTo 1).map { hoursAgo ->
         val start = endHour.minusHours(hoursAgo.toLong())
         val end = start.plusHours(1)
         val startEpoch = start.toEpochSecond()
-        val accumulator = sums[startEpoch]
         HourlyTemperaturePoint(
             startEpochSecond = startEpoch,
             endEpochSecond = end.toEpochSecond(),
-            averageCelsius = if (accumulator == null || accumulator[1] == 0.0) {
-                null
-            } else {
-                accumulator[0] / accumulator[1]
-            },
+            medianCelsius = valuesByHour[startEpoch]?.medianOrNull(),
         )
     }
 }
 
 /**
- * Average for each clock hour in the [hourCount] hours ending at [endEpochSecond] (exclusive).
- *
- * This mirrors the day-part baseline but at one-hour resolution: for a bucket, only readings
- * at the same clock hour from earlier days are considered, so the in-progress hour (and any
- * incomplete period) cannot bias its own reference value. Like the baseline, readings below
- * [MIN_VALID_TEMPERATURE] are ignored.
+ * Step line for the personal reference profile across the visible chart window. The profile is
+ * indexed by local clock hour and repeated for every visible day. Hours without enough history
+ * are omitted.
  */
-fun hourlyAverageWindow(
-    records: List<RecordItem>,
-    endEpochSecond: Long,
-    hourCount: Int = 24,
+fun temperatureReferenceSegments(
+    profile: List<Double?>,
+    windowStartEpochSecond: Long,
+    windowEndEpochSecond: Long,
     zone: ZoneId = ZoneId.systemDefault(),
-): List<HourlyAveragePoint> {
-    require(hourCount > 0)
-    val endHour = Instant.ofEpochSecond(endEpochSecond)
+): List<BaselineSegment> {
+    if (windowEndEpochSecond <= windowStartEpochSecond) return emptyList()
+
+    val segments = mutableListOf<BaselineSegment>()
+    var hour = Instant.ofEpochSecond(windowStartEpochSecond)
         .atZone(zone)
         .truncatedTo(ChronoUnit.HOURS)
-    val firstRecord = records.minOfOrNull { it.tStart } ?: 0L
-    val lastRecord = records.maxOfOrNull { it.tStart } ?: 0L
-    val localHours = LocalHourBucketer(zone, firstRecord, lastRecord)
-    val seriesByHour = records
-        .filter { it.value >= MIN_VALID_TEMPERATURE }
-        .groupBy { localHours.hourOfDay(it.tStart) }
-        .mapValues { (_, values) ->
-            val sorted = values.sortedBy { it.tStart }
-            val starts = LongArray(sorted.size)
-            val prefixSums = DoubleArray(sorted.size + 1)
-            sorted.forEachIndexed { index, record ->
-                starts[index] = record.tStart
-                prefixSums[index + 1] = prefixSums[index] + record.value / 100.0
-            }
-            HourlySeries(starts, prefixSums)
+    while (hour.toEpochSecond() < windowEndEpochSecond) {
+        val next = hour.plusHours(1)
+        val segmentStart = maxOf(hour.toEpochSecond(), windowStartEpochSecond)
+        val segmentEnd = minOf(next.toEpochSecond(), windowEndEpochSecond)
+        val celsius = profile.getOrNull(hour.hour)
+        if (celsius != null && segmentStart < segmentEnd) {
+            segments += BaselineSegment(segmentStart, segmentEnd, celsius)
         }
-
-    return (hourCount downTo 1).map { hoursAgo ->
-        val start = endHour.minusHours(hoursAgo.toLong())
-        val end = start.plusHours(1)
-        val startEpoch = start.toEpochSecond()
-        val series = seriesByHour[start.hour]
-        val count = if (series == null) 0 else countBefore(series.starts, startEpoch)
-
-        HourlyAveragePoint(
-            startEpochSecond = startEpoch,
-            endEpochSecond = end.toEpochSecond(),
-            averageCelsius = if (count == 0 || series == null) {
-                null
-            } else {
-                series.prefixSums[count] / count
-            },
-        )
+        hour = next
     }
-}
-
-private data class HourlySeries(
-    val starts: LongArray,
-    val prefixSums: DoubleArray,
-)
-
-/** Number of sorted [starts] entries strictly before [cutoff]. */
-private fun countBefore(starts: LongArray, cutoff: Long): Int {
-    var low = 0
-    var high = starts.size
-    while (low < high) {
-        val middle = (low + high) ushr 1
-        if (starts[middle] < cutoff) {
-            low = middle + 1
-        } else {
-            high = middle
-        }
-    }
-    return low
+    return segments
 }
 
 /**
- * Background baseline line for [windowStartEpochSecond] until [windowEndEpochSecond].
- *
- * Each visible day part gets the same period-specific median that
- * [link.hector.freellee.data.HealthConnectClient] writes, computed only from readings that
- * existed before that day part started. Parts without enough history are omitted.
+ * Fallback day-part baseline used while there is not yet a personal hourly reference profile.
+ * Parts without enough history are omitted.
  */
 fun temperatureBaselineSegments(
     records: List<RecordItem>,
@@ -493,4 +589,3 @@ private val CLOCK_ORDER = listOf(
 )
 
 private const val SECONDS_PER_HOUR = 3_600L
-private const val SECONDS_PER_DAY = 24L * SECONDS_PER_HOUR

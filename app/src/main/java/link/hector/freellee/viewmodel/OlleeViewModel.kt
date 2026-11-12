@@ -27,15 +27,34 @@ import link.hector.freellee.BLE_CONNECT_TIMEOUT_MS
 import link.hector.freellee.DEFAULT_WATCH_NAME
 import link.hector.freellee.STEP_RETENTION_DAYS
 import link.hector.freellee.TEMPERATURE_RETENTION_DAYS
+import link.hector.freellee.data.AdvancedModeSetting
 import link.hector.freellee.data.DeviceStore
 import link.hector.freellee.data.DeviceStore.RecordItem
 import link.hector.freellee.data.DeviceStore.StepInterval
+import link.hector.freellee.data.HcWriteStats
 import link.hector.freellee.data.HealthConnectClient
 import link.hector.freellee.data.PairedDevice
+import link.hector.freellee.data.SLEEP_DETECTION_DAYS
+import link.hector.freellee.data.SamplingProfile
+import link.hector.freellee.data.SleepSession
+import link.hector.freellee.data.SleepSessionSource
+import link.hector.freellee.data.TemperatureDayAggregate
+import link.hector.freellee.data.buildTemperatureDayAggregates
+import link.hector.freellee.data.combineSleepSessions
+import link.hector.freellee.data.detectSleepSessions
+import link.hector.freellee.data.inferSleepKind
+import link.hector.freellee.data.inferStepIntervalSeconds
+import link.hector.freellee.data.inferTemperatureIntervalSeconds
+import link.hector.freellee.data.inferTemperatureSampleSeconds
+import link.hector.freellee.data.isAdvancedEnabled
+import link.hector.freellee.data.mergeSleepSessions
+import link.hector.freellee.data.sleepDayKey
 import link.hector.freellee.ui.charts.DashboardChartData
 import link.hector.freellee.ui.charts.buildDashboardChartData
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 private const val VM_TAG = "OlleeViewModel"
@@ -49,13 +68,15 @@ sealed class DashboardUiState {
         val steps: Int?,
         val lastSyncTime: Instant?,
         val stepIntervals: List<StepInterval> = emptyList(),
-        val weeklySteps: Int? = null,
         val connected: Boolean = false,
         val temperatureRecords: List<HistoryEntry> = emptyList(),
         val heartRateRecords: List<HistoryEntry> = emptyList(),
         val counterRecords: List<HistoryEntry> = emptyList(),
         val stopwatchRecords: List<HistoryEntry> = emptyList(),
         val firmwareVersion: String? = null,
+        val temperatureAggregates: List<TemperatureDayAggregate> = emptyList(),
+        val sleepSessions: List<SleepSession> = emptyList(),
+        val stepGoal: Int? = null,
     ) : DashboardUiState()
     object SyncSuccessful : DashboardUiState()
     data class Error(val message: String) : DashboardUiState()
@@ -86,6 +107,32 @@ class OlleeViewModel(
     private val _uiState = MutableStateFlow<DashboardUiState>(DashboardUiState.Disconnected)
     val uiState: StateFlow<DashboardUiState> = _uiState.asStateFlow()
 
+    /** Serializes Health Connect sleep writes so corrections and syncs cannot interleave. */
+    private val sleepHcMutex = Mutex()
+
+    /** Serializes read-modify-write cycles on the stored sleep sessions. */
+    private val sleepMutationMutex = Mutex()
+
+    /** Serializes the one-time skin temperature id migration. */
+    private val tempHcMigrationMutex = Mutex()
+
+    /** What the stored data says about the watch's sampling resolution. */
+    private val _samplingProfile = MutableStateFlow(SamplingProfile.UNKNOWN)
+    val samplingProfile: StateFlow<SamplingProfile> = _samplingProfile.asStateFlow()
+
+    /** The user's advanced-feature preference, as persisted. */
+    private val _advancedMode = MutableStateFlow(AdvancedModeSetting.AUTO)
+    val advancedMode: StateFlow<AdvancedModeSetting> = _advancedMode.asStateFlow()
+
+    /**
+     * Whether advanced features are active right now. In [AdvancedModeSetting.AUTO] this follows
+     * the observed sampling, so a stock watch silently falls back to basic temperature tracking.
+     */
+    val advancedEnabled: StateFlow<Boolean> =
+        combine(_advancedMode, _samplingProfile) { mode, profile ->
+            mode.isAdvancedEnabled(profile)
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
     /**
      * Chart inputs are prepared off the UI thread and cached for the lifetime of the ViewModel.
      * Switching tabs therefore reuses the prepared graphs instead of rebuilding them on the main
@@ -111,6 +158,10 @@ class OlleeViewModel(
         .map { it.isNotEmpty() }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
+    /** Last successful Health Connect writes, shown on the Settings screen. */
+    val hcWriteStats: StateFlow<HcWriteStats> = deviceStore.getHcWriteStats()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), HcWriteStats())
+
     /** Preserves the last successful Ready state so the UI can fall back to it
      *  when the current uiState is transient (Connecting/Syncing/Error) or
      *  when the composable is recreated by a tab switch. */
@@ -134,18 +185,31 @@ class OlleeViewModel(
                     val now = Instant.now().epochSecond
                     val prepared = withContext(Dispatchers.Default) {
                         val startedAt = System.nanoTime()
+                        val temperatureRecords = state.temperatureRecords.map { history ->
+                            RecordItem(
+                                type = 0,
+                                tStart = history.watchTimestampStart,
+                                tEnd = history.watchTimestampEnd,
+                                value = history.value,
+                                syncTime = history.syncTimestamp,
+                            )
+                        }
+                        // Advanced features can be switched off or the firmware reverted, so
+                        // decide from the data in this snapshot rather than from a stale flag.
+                        val profile = SamplingProfile(
+                            stepIntervalSeconds = inferStepIntervalSeconds(state.stepIntervals),
+                            temperatureIntervalSeconds = inferTemperatureIntervalSeconds(
+                                temperatureRecords,
+                            ),
+                        )
+                        val sleepEnabled = _advancedMode.value.isAdvancedEnabled(profile)
                         buildDashboardChartData(
                             stepIntervals = state.stepIntervals,
-                            temperatureRecords = state.temperatureRecords.map { history ->
-                                RecordItem(
-                                    type = 0,
-                                    tStart = history.watchTimestampStart,
-                                    tEnd = history.watchTimestampEnd,
-                                    value = history.value,
-                                    syncTime = history.syncTimestamp,
-                                )
-                            },
+                            temperatureRecords = temperatureRecords,
                             nowEpochSecond = now,
+                            temperatureAggregates = state.temperatureAggregates,
+                            sleepSessions = if (sleepEnabled) state.sleepSessions else emptyList(),
+                            lastSyncEpochSecond = state.lastSyncTime?.epochSecond,
                         ).also {
                             Log.d(
                                 VM_TAG,
@@ -165,6 +229,7 @@ class OlleeViewModel(
         val counterFlow = deviceStore.getCachedCounterRecords()
         val stopwatchFlow = deviceStore.getCachedStopwatchRecords()
         val syncTimeFlow = deviceStore.getLastSyncTime()
+        val advancedModeFlow = deviceStore.getAdvancedMode()
 
         data class CachedData(
             val devices: List<PairedDevice>,
@@ -173,12 +238,15 @@ class OlleeViewModel(
             val counterRecords: List<RecordItem>,
             val stopwatchRecords: List<RecordItem>,
             val lastSyncEpoch: Long?,
+            val advancedMode: AdvancedModeSetting = AdvancedModeSetting.AUTO,
         )
 
         combine(devicesFlow, tempFlow, hrFlow, counterFlow, stopwatchFlow) { devices, tempRecords, hrRecords, counterRecords, stopwatchRecords ->
             CachedData(devices, tempRecords, hrRecords, counterRecords, stopwatchRecords, null)
         }.combine(syncTimeFlow) { cached, lastSyncEpoch ->
             cached.copy(lastSyncEpoch = lastSyncEpoch)
+        }.combine(advancedModeFlow) { cached, advancedMode ->
+            cached.copy(advancedMode = advancedMode)
         }.collect { data ->
             val devices = data.devices
             val tempRecords = data.tempRecords
@@ -186,6 +254,7 @@ class OlleeViewModel(
             val counterRecords = data.counterRecords
             val stopwatchRecords = data.stopwatchRecords
             val lastSyncEpoch = data.lastSyncEpoch
+            _advancedMode.value = data.advancedMode
 
             Log.d(VM_TAG, "loadCachedData: devices=${devices.size}, temp=${tempRecords.size}, hr=${hrRecords.size}, syncTime=$lastSyncEpoch")
             if (tempRecords.isNotEmpty()) {
@@ -206,26 +275,25 @@ class OlleeViewModel(
 
             if (_uiState.value is DashboardUiState.Connecting || _uiState.value is DashboardUiState.Syncing) return@collect
 
-            if (devices.isEmpty()) {
-                val allIntervals = deviceStore.getAllStepIntervalsAcrossDevices().first()
-                Log.d(VM_TAG, "loadCachedData(no active device): read ${allIntervals.size} step intervals from store")
-                val rollingStart = rollingWindowStartEpoch(Instant.now().epochSecond)
-                val weeklySteps = allIntervals.filter { it.tStart >= rollingStart }.sumOf { it.steps }
-                Log.d(VM_TAG, "loadCachedData(no active device): weeklySteps=$weeklySteps from ${allIntervals.size} intervals")
+            val temperatureAggregates = refreshTemperatureAggregates(tempRecords)
+            // Uses the cached data, so it does not depend on the watch being reachable.
+            ensureSkinTemperatureMigration(tempRecords, temperatureAggregates)
 
-                if (allIntervals.isNotEmpty() || tempRecords.isNotEmpty() || hrRecords.isNotEmpty() || counterRecords.isNotEmpty() || stopwatchRecords.isNotEmpty()) {
-                    _uiState.value = DashboardUiState.Ready(
-                        steps = null,
-                        lastSyncTime = lastSyncEpoch?.let { Instant.ofEpochSecond(it) },
-                        stepIntervals = allIntervals,
-                        weeklySteps = if (weeklySteps > 0) weeklySteps else null,
-                        connected = false,
-                        temperatureRecords = tempRecords.map { HistoryEntry(it.value, it.tStart, it.tEnd, it.syncTime) },
-                        heartRateRecords = hrRecords.map { HistoryEntry(it.value, it.tStart, it.tEnd, it.syncTime, isInstantaneous = true) },
-                        counterRecords = counterRecords.map { HistoryEntry(it.value, it.tStart, it.tEnd, it.syncTime, isInstantaneous = true) },
-                        stopwatchRecords = stopwatchRecords.map { HistoryEntry(it.value, it.tStart, it.tEnd, it.syncTime) },
-                    )
-                } else if (_uiState.value !is DashboardUiState.Ready && _uiState.value !is DashboardUiState.Connecting && _uiState.value !is DashboardUiState.Syncing) {
+            if (devices.isEmpty()) {
+                val emitted = loadNoDeviceState(
+                    tempRecords = tempRecords,
+                    hrRecords = hrRecords,
+                    counterRecs = counterRecords,
+                    stopwatchRecs = stopwatchRecords,
+                    lastSyncEpoch = lastSyncEpoch,
+                    temperatureAggregates = temperatureAggregates,
+                    advancedMode = data.advancedMode,
+                )
+                if (!emitted &&
+                    _uiState.value !is DashboardUiState.Ready &&
+                    _uiState.value !is DashboardUiState.Connecting &&
+                    _uiState.value !is DashboardUiState.Syncing
+                ) {
                     _uiState.value = DashboardUiState.Disconnected
                 }
                 return@collect
@@ -233,9 +301,26 @@ class OlleeViewModel(
 
             val device = devices.first()
             val macAddress = device.macAddress
-            loadDeviceState(macAddress, tempRecords, hrRecords, counterRecords, stopwatchRecords, lastSyncEpoch)
+            loadDeviceState(
+                macAddress = macAddress,
+                tempRecords = tempRecords,
+                hrRecords = hrRecords,
+                counterRecs = counterRecords,
+                stopwatchRecs = stopwatchRecords,
+                lastSyncEpoch = lastSyncEpoch,
+                temperatureAggregates = temperatureAggregates,
+                advancedMode = data.advancedMode,
+            )
         }
     }
+
+    private fun samplingProfileFor(
+        intervals: List<StepInterval>,
+        tempRecords: List<RecordItem>,
+    ): SamplingProfile = SamplingProfile(
+        stepIntervalSeconds = inferStepIntervalSeconds(intervals),
+        temperatureIntervalSeconds = inferTemperatureIntervalSeconds(tempRecords),
+    )
 
     private suspend fun loadDeviceState(
         macAddress: String,
@@ -244,8 +329,20 @@ class OlleeViewModel(
         counterRecs: List<RecordItem>,
         stopwatchRecs: List<RecordItem>,
         lastSyncEpoch: Long?,
+        temperatureAggregates: List<TemperatureDayAggregate>,
+        advancedMode: AdvancedModeSetting,
     ) {
         val intervals = deviceStore.getStepIntervalsForDevice(macAddress).first()
+        val stepGoal = deviceStore.getStepGoal().first()
+        val sampling = samplingProfileFor(intervals, tempRecords)
+        _samplingProfile.value = sampling
+        val sleepSessions = sleepMutationMutex.withLock {
+            refreshSleepSessions(
+                intervals = intervals,
+                temperatureRecords = tempRecords,
+                advancedEnabled = advancedMode.isAdvancedEnabled(sampling),
+            )
+        }
         Log.d(VM_TAG, "loadDeviceState: mac=$macAddress, read ${intervals.size} step intervals from store")
         intervals.take(10).forEachIndexed { i, it ->
             Log.d(VM_TAG, "  interval[$i]: tStart=${it.tStart}, tEnd=${it.tEnd}, steps=${it.steps}")
@@ -255,22 +352,22 @@ class OlleeViewModel(
         val todayIntervals = intervals.filter { it.tStart >= todayStart }
         Log.d(VM_TAG, "loadDeviceState: todayIntervals=${todayIntervals.size} (filtered from ${intervals.size})")
         val dailySteps = todayIntervals.sumOf { it.steps }
-        val rollingStart = rollingWindowStartEpoch(Instant.now().epochSecond)
-        val weeklySteps = intervals.filter { it.tStart >= rollingStart }.sumOf { it.steps }
 
-        Log.d(VM_TAG, "loadDeviceState: mac=$macAddress, dailySteps=$dailySteps, weeklySteps=$weeklySteps (from ${intervals.size} total, ${todayIntervals.size} today)")
+        Log.d(VM_TAG, "loadDeviceState: mac=$macAddress, dailySteps=$dailySteps (from ${intervals.size} total, ${todayIntervals.size} today)")
         Log.d(VM_TAG, "loadDeviceState: counterRecords=${counterRecs.size}, stopwatchRecords=${stopwatchRecs.size}")
 
         val readyState = DashboardUiState.Ready(
             steps = if (dailySteps > 0) dailySteps else null,
             lastSyncTime = lastSyncEpoch?.let { Instant.ofEpochSecond(it) },
             stepIntervals = intervals,
-            weeklySteps = if (weeklySteps > 0) weeklySteps else null,
             connected = repository.connectionState.value == ConnectionState.READY,
             temperatureRecords = tempRecords.map { HistoryEntry(it.value, it.tStart, it.tEnd, it.syncTime) },
             heartRateRecords = hrRecords.map { HistoryEntry(it.value, it.tStart, it.tEnd, it.syncTime, isInstantaneous = true) },
             counterRecords = counterRecs.map { HistoryEntry(it.value, it.tStart, it.tEnd, it.syncTime, isInstantaneous = true) },
             stopwatchRecords = stopwatchRecs.map { HistoryEntry(it.value, it.tStart, it.tEnd, it.syncTime) },
+            temperatureAggregates = temperatureAggregates,
+            sleepSessions = sleepSessions,
+            stepGoal = stepGoal,
         )
         lastReadyState = readyState
         _uiState.value = readyState
@@ -282,27 +379,130 @@ class OlleeViewModel(
         counterRecs: List<RecordItem>,
         stopwatchRecs: List<RecordItem>,
         lastSyncEpoch: Long?,
-    ) {
+        temperatureAggregates: List<TemperatureDayAggregate>,
+        advancedMode: AdvancedModeSetting,
+    ): Boolean {
         val allIntervals = deviceStore.getAllStepIntervalsAcrossDevices().first()
-        Log.d(VM_TAG, "loadNoDeviceState: read ${allIntervals.size} step intervals from store")
-        val rollingStart = rollingWindowStartEpoch(Instant.now().epochSecond)
-        val weeklySteps = allIntervals.filter { it.tStart >= rollingStart }.sumOf { it.steps }
+        val sampling = samplingProfileFor(allIntervals, tempRecords)
+        _samplingProfile.value = sampling
+        val sleepSessions = sleepMutationMutex.withLock {
+            refreshSleepSessions(
+                intervals = allIntervals,
+                temperatureRecords = tempRecords,
+                advancedEnabled = advancedMode.isAdvancedEnabled(sampling),
+            )
+        }
+        Log.d(VM_TAG, "loadNoDeviceState: read ${allIntervals.size} step intervals from store, sampling=$sampling")
 
         if (allIntervals.isNotEmpty() || tempRecords.isNotEmpty() || hrRecords.isNotEmpty() || counterRecs.isNotEmpty() || stopwatchRecs.isNotEmpty()) {
             val readyState = DashboardUiState.Ready(
                 steps = null,
                 lastSyncTime = lastSyncEpoch?.let { Instant.ofEpochSecond(it) },
                 stepIntervals = allIntervals,
-                weeklySteps = if (weeklySteps > 0) weeklySteps else null,
                 connected = false,
                 temperatureRecords = tempRecords.map { HistoryEntry(it.value, it.tStart, it.tEnd, it.syncTime) },
                 heartRateRecords = hrRecords.map { HistoryEntry(it.value, it.tStart, it.tEnd, it.syncTime, isInstantaneous = true) },
                 counterRecords = counterRecs.map { HistoryEntry(it.value, it.tStart, it.tEnd, it.syncTime, isInstantaneous = true) },
                 stopwatchRecords = stopwatchRecs.map { HistoryEntry(it.value, it.tStart, it.tEnd, it.syncTime) },
+                temperatureAggregates = temperatureAggregates,
+                sleepSessions = sleepSessions,
+                stepGoal = deviceStore.getStepGoal().first(),
             )
             lastReadyState = readyState
             _uiState.value = readyState
+            return true
         }
+        return false
+    }
+
+    /**
+     * Re-runs sleep detection over the recent window and merges it with user corrections.
+     */
+    private suspend fun refreshSleepSessions(
+        intervals: List<StepInterval>,
+        temperatureRecords: List<RecordItem>,
+        advancedEnabled: Boolean,
+    ): List<SleepSession> {
+        val existing = deviceStore.getSleepSessions().first()
+        // Without fine-grained step data the detector only produces hour-aligned guesses, so keep
+        // whatever was already confirmed instead of recomputing noise.
+        if (!advancedEnabled) return existing
+        val now = Instant.now().epochSecond
+        val detected = detectSleepSessions(
+            temperatureRecords = temperatureRecords,
+            stepIntervals = intervals,
+            nowEpochSecond = now,
+            sampleSeconds = inferTemperatureSampleSeconds(temperatureRecords),
+        )
+        val merged = mergeSleepSessions(
+            existing = existing,
+            detected = detected,
+            nowEpochSecond = now,
+        )
+        if (merged != existing) {
+            deviceStore.saveSleepSessions(merged)
+        }
+        return merged
+    }
+
+    /**
+     * One-time move of the skin temperature records to UUID client ids. Runs from cached data,
+     * so it works even when the watch cannot be reached. Legacy records are removed first, then
+     * the retained readings are written again, which keeps a single copy of each day part.
+     */
+    private suspend fun ensureSkinTemperatureMigration(
+        records: List<RecordItem>,
+        aggregates: List<TemperatureDayAggregate>,
+    ) {
+        if (records.isEmpty() || aggregates.isEmpty()) return
+        if (deviceStore.isTempHcUuidMigrated().first()) return
+        if (!migrateTemperatureIdsIfNeeded()) return
+        Log.d(VM_TAG, "Skin temperature id migration: ${records.size} readings")
+        val written = healthConnectClient.writeSkinTemperatureRecords(records, aggregates)
+        if (written > 0) {
+            deviceStore.saveHcTemperatureWrite(Instant.now().epochSecond, written)
+        }
+    }
+
+    /**
+     * Makes sure legacy skin temperature records are gone before UUID ids are written. Returns
+     * true when the write may proceed: either the migration is already done or the legacy
+     * records were removed now. A failure leaves the flag unset so the next run retries.
+     */
+    private suspend fun migrateTemperatureIdsIfNeeded(): Boolean {
+        if (deviceStore.isTempHcUuidMigrated().first()) return true
+        return tempHcMigrationMutex.withLock {
+            when {
+                deviceStore.isTempHcUuidMigrated().first() -> true
+                !healthConnectClient.deleteAllOwnSkinTemperatureRecords() -> {
+                    Log.w(VM_TAG, "Skin temperature id migration skipped; will retry")
+                    false
+                }
+                else -> {
+                    deviceStore.setTempHcUuidMigrated()
+                    true
+                }
+            }
+        }
+    }
+
+    /**
+     * Rebuilds the long-term daily aggregates from the retained raw samples. Baselines already
+     * stored on a day are preserved, so re-syncing cannot make them drift.
+     */
+    private suspend fun refreshTemperatureAggregates(
+        records: List<RecordItem>,
+    ): List<TemperatureDayAggregate> {
+        val existing = deviceStore.getTemperatureAggregates().first()
+        val rebuilt = buildTemperatureDayAggregates(
+            records = records,
+            existing = existing,
+            sampleSeconds = inferTemperatureSampleSeconds(records),
+        )
+        if (rebuilt != existing) {
+            deviceStore.saveTemperatureAggregates(rebuilt)
+        }
+        return rebuilt
     }
 
     fun sync(address: String? = null) = viewModelScope.launch(Dispatchers.IO) {
@@ -346,6 +546,18 @@ class OlleeViewModel(
             }
             val firmwareVersion = deviceInfo?.firmware
             val voltageMv = deviceInfo?.voltageMv
+
+            // The goal lives on the watch, so read it while we are connected and cache it.
+            try {
+                val goal = repository.stepGoal()
+                if (goal in 100..500_000) {
+                    deviceStore.saveStepGoal(goal)
+                } else {
+                    Log.w(VM_TAG, "Ignoring out-of-range step goal: $goal")
+                }
+            } catch (e: Exception) {
+                Log.w(VM_TAG, "Failed to read step goal: ${e.message}")
+            }
 
             // Update stored device info on every sync so the name is always fresh
             _uiState.value = DashboardUiState.Syncing("Saving device info")
@@ -452,9 +664,6 @@ class OlleeViewModel(
             val dailyStepsFromStorage = allIntervals.filter { it.tStart >= todayStart }.sumOf { it.steps }
             Log.d(VM_TAG, "sync: dailyStepsFromStorage=$dailyStepsFromStorage from ${allIntervals.size} total")
 
-            val rollingStart = rollingWindowStartEpoch(now)
-            val weeklyStepsFromStorage = allIntervals.filter { it.tStart >= rollingStart }.sumOf { it.steps }
-
             val rawTemperatureRecords = allRecords.filter { it.type == ActivityType.TEMPERATURE }
             val rawHeartRateRecords = allRecords.filter { it.type == ActivityType.HEART_RATE }
             val rawCounterRecords = allRecords.filter { it.type == ActivityType.COUNTER }
@@ -489,7 +698,7 @@ class OlleeViewModel(
             
             // Load existing records once, compute merged data in memory to avoid reloading later
             var existingTempRecords = deviceStore.getCachedTempRecords().first()
-            // Prune existing temp records older than 15 days
+            // Prune existing temp records older than the raw retention window
             val tempCutoffEpoch = now - TEMPERATURE_RETENTION_DAYS * 24 * 3600L
             val existingTempPrunedCount = existingTempRecords.size
             existingTempRecords = existingTempRecords.filter { it.tStart >= tempCutoffEpoch }
@@ -559,8 +768,20 @@ class OlleeViewModel(
                 }
             }
 
-            healthConnectClient.writeSkinTemperatureRecords(mergedTempRecords)
+            val temperatureAggregates = refreshTemperatureAggregates(mergedTempRecords)
+            // Legacy temperature records used readable ids, which Health Connect cannot delete.
+            // Remove them once so the retained readings are written again under UUID ids.
+            if (migrateTemperatureIdsIfNeeded()) {
+                val tempWritten = healthConnectClient.writeSkinTemperatureRecords(
+                    mergedTempRecords,
+                    temperatureAggregates,
+                )
+                if (tempWritten > 0) {
+                    deviceStore.saveHcTemperatureWrite(now, tempWritten)
+                }
+            }
             healthConnectClient.writeHeartRateRecords(heartRateRecords)
+            syncSleepToHealthConnect(deviceStore.getSleepSessions().first())
 
             deviceStore.saveLastSyncTime(Instant.now().epochSecond)
 
@@ -576,9 +797,26 @@ class OlleeViewModel(
             val lastSyncEpoch = deviceStore.getLastSyncTime().first()
             
             if (devices.isNotEmpty()) {
-                loadDeviceState(devices.first().macAddress, mergedTempRecords, mergedHRRecords, mergedCounterRecords, mergedStopwatchRecords, lastSyncEpoch)
+                loadDeviceState(
+                    macAddress = devices.first().macAddress,
+                    tempRecords = mergedTempRecords,
+                    hrRecords = mergedHRRecords,
+                    counterRecs = mergedCounterRecords,
+                    stopwatchRecs = mergedStopwatchRecords,
+                    lastSyncEpoch = lastSyncEpoch,
+                    temperatureAggregates = temperatureAggregates,
+                    advancedMode = _advancedMode.value,
+                )
             } else {
-                loadNoDeviceState(mergedTempRecords, mergedHRRecords, mergedCounterRecords, mergedStopwatchRecords, lastSyncEpoch)
+                loadNoDeviceState(
+                    tempRecords = mergedTempRecords,
+                    hrRecords = mergedHRRecords,
+                    counterRecs = mergedCounterRecords,
+                    stopwatchRecs = mergedStopwatchRecords,
+                    lastSyncEpoch = lastSyncEpoch,
+                    temperatureAggregates = temperatureAggregates,
+                    advancedMode = _advancedMode.value,
+                )
             }
 
         } catch (e: Exception) {
@@ -593,6 +831,254 @@ class OlleeViewModel(
 
     fun clearError() {
         _uiState.value = DashboardUiState.Disconnected
+    }
+
+    /**
+     * Writes temperature and confirmed sleep from the cached data. Independent of the watch,
+     * so it can recover when a sync-time Health Connect write failed.
+     */
+    fun resyncHealthConnect() = viewModelScope.launch(Dispatchers.IO) {
+        val ready = (_uiState.value as? DashboardUiState.Ready) ?: lastReadyState ?: return@launch
+        val tempRecords = ready.temperatureRecords.map { history ->
+            RecordItem(
+                type = 0,
+                tStart = history.watchTimestampStart,
+                tEnd = history.watchTimestampEnd,
+                value = history.value,
+                syncTime = history.syncTimestamp,
+            )
+        }
+        if (migrateTemperatureIdsIfNeeded()) {
+            val written = healthConnectClient.writeSkinTemperatureRecords(
+                tempRecords,
+                ready.temperatureAggregates,
+            )
+            if (written > 0) {
+                deviceStore.saveHcTemperatureWrite(Instant.now().epochSecond, written)
+            }
+        }
+        syncSleepToHealthConnect(deviceStore.getSleepSessions().first())
+    }
+
+    // ── Advanced (patched firmware) features ─────────────────────────────
+
+    /** Persist the advanced-feature preference; cached data reloads through the setting flow. */
+    fun setAdvancedMode(mode: AdvancedModeSetting) = viewModelScope.launch(Dispatchers.IO) {
+        deviceStore.saveAdvancedMode(mode)
+    }
+
+    // ── Sleep session corrections ────────────────────────────────────────
+
+    fun confirmSleepSession(id: String) = viewModelScope.launch(Dispatchers.IO) {
+        mutateSleepSessions { sessions ->
+            sessions.map { session ->
+                if (session.id == id && !session.dismissed) {
+                    session.copy(
+                        source = SleepSessionSource.USER,
+                        confidence = 1.0,
+                    )
+                } else {
+                    session
+                }
+            }
+        }
+    }
+
+    fun adjustSleepSession(id: String, startEpochSecond: Long, endEpochSecond: Long) =
+        viewModelScope.launch(Dispatchers.IO) {
+            if (endEpochSecond <= startEpochSecond) return@launch
+            mutateSleepSessions { sessions ->
+                val target = sessions.firstOrNull { it.id == id }
+                    ?: return@mutateSleepSessions sessions
+                // Keep the id stable so the Health Connect record is updated, not duplicated.
+                val adjusted = target.copy(
+                    startEpochSecond = startEpochSecond,
+                    endEpochSecond = endEpochSecond,
+                    kind = inferSleepKind(startEpochSecond, endEpochSecond),
+                    confidence = 1.0,
+                    source = SleepSessionSource.USER,
+                    dismissed = false,
+                )
+                (sessions.filterNot { it.id == id } + adjusted).filterNot {
+                    it.source == SleepSessionSource.DETECTED && !it.dismissed && it.overlaps(adjusted)
+                }
+            }
+        }
+
+    /** Rejoins this session with the next one on the same sleep day. */
+    fun mergeSleepSessionWithNext(id: String) = viewModelScope.launch(Dispatchers.IO) {
+        mutateSleepSessions { sessions ->
+            val zone = ZoneId.systemDefault()
+            val active = sessions.filter { !it.dismissed }.sortedBy { it.startEpochSecond }
+            val index = active.indexOfFirst { it.id == id }
+            if (index < 0 || index >= active.lastIndex) return@mutateSleepSessions sessions
+            val first = active[index]
+            val second = active[index + 1]
+            if (sleepDayKey(first.startEpochSecond, zone) !=
+                sleepDayKey(second.startEpochSecond, zone)
+            ) {
+                return@mutateSleepSessions sessions
+            }
+            val merged = combineSleepSessions(first, second, zone)
+            sessions.filterNot { it.id == first.id || it.id == second.id || it.id == merged.id }
+                .filterNot {
+                    it.source == SleepSessionSource.DETECTED && !it.dismissed && it.overlaps(merged)
+                } + merged
+        }
+    }
+
+    /**
+     * Drops a confirmation or manual adjustment and lets the detector rebuild the session, so
+     * a wrong correction does not keep overriding better detection.
+     */
+    fun resetSleepSession(id: String) = viewModelScope.launch(Dispatchers.IO) {
+        mutateSleepSessions { sessions ->
+            val target = sessions.firstOrNull { it.id == id }
+                ?: return@mutateSleepSessions sessions
+            sessions.filterNot { it.id == id || (it.dismissed && it.touches(target)) }
+        }
+        redetectSleepSessions()
+    }
+
+    /**
+     * Discards every session in the detection window, including corrections and dismissed
+     * detections, and rebuilds the list from the raw data. Sessions older than the window are
+     * kept because they can no longer be re-derived.
+     */
+    fun resetSleepCorrections() = viewModelScope.launch(Dispatchers.IO) {
+        val cutoff = Instant.now().epochSecond - SLEEP_DETECTION_DAYS * 86_400L
+        mutateSleepSessions { sessions ->
+            sessions.filter { it.startEpochSecond < cutoff }
+        }
+        redetectSleepSessions()
+    }
+
+    /** Re-runs detection from the current cached data and publishes the result. */
+    private suspend fun redetectSleepSessions() {
+        val ready = (_uiState.value as? DashboardUiState.Ready) ?: lastReadyState ?: return
+        val tempRecords = ready.temperatureRecords.map { history ->
+            RecordItem(
+                type = 0,
+                tStart = history.watchTimestampStart,
+                tEnd = history.watchTimestampEnd,
+                value = history.value,
+                syncTime = history.syncTimestamp,
+            )
+        }
+        // Reset is an explicit request to rebuild, so run detection even when advanced
+        // features are currently gated off; otherwise the reset would silently wipe sessions.
+        val sessions = sleepMutationMutex.withLock {
+            val rebuilt = refreshSleepSessions(
+                intervals = ready.stepIntervals,
+                temperatureRecords = tempRecords,
+                advancedEnabled = true,
+            )
+            syncSleepToHealthConnect(rebuilt)
+            rebuilt
+        }
+        val updated = ready.copy(sleepSessions = sessions)
+        lastReadyState = updated
+        _uiState.value = updated
+    }
+
+    /**
+     * Re-adds a removed session, used by the undo action. It becomes a user-owned session so a
+     * later detection pass cannot drop it again.
+     */
+    fun restoreSleepSession(session: SleepSession) = viewModelScope.launch(Dispatchers.IO) {
+        mutateSleepSessions { sessions ->
+            sessions.filterNot {
+                it.id == session.id || it.id == "dismissed_${session.id}"
+            } + session.copy(
+                dismissed = false,
+                source = SleepSessionSource.USER,
+                confidence = 1.0,
+            )
+        }
+    }
+
+    fun dismissSleepSession(id: String) = viewModelScope.launch(Dispatchers.IO) {
+        mutateSleepSessions { sessions ->
+            val target = sessions.firstOrNull { it.id == id }
+                ?: return@mutateSleepSessions sessions
+            sessions.filterNot { it.id == id } + target.copy(
+                id = "dismissed_${target.id}",
+                dismissed = true,
+                confidence = 0.0,
+                source = SleepSessionSource.DETECTED,
+            )
+        }
+    }
+
+    fun addSleepSession(startEpochSecond: Long, endEpochSecond: Long) =
+        viewModelScope.launch(Dispatchers.IO) {
+            if (endEpochSecond <= startEpochSecond) return@launch
+            mutateSleepSessions { sessions ->
+                val userSession = SleepSession(
+                    id = "user_${startEpochSecond}_${endEpochSecond}",
+                    startEpochSecond = startEpochSecond,
+                    endEpochSecond = endEpochSecond,
+                    kind = inferSleepKind(startEpochSecond, endEpochSecond),
+                    confidence = 1.0,
+                    source = SleepSessionSource.USER,
+                )
+                sessions.filterNot {
+                    it.source == SleepSessionSource.DETECTED && !it.dismissed && it.overlaps(userSession)
+                } + userSession
+            }
+        }
+
+    private suspend fun mutateSleepSessions(
+        transform: (List<SleepSession>) -> List<SleepSession>,
+    ) {
+        sleepMutationMutex.withLock {
+            val current = deviceStore.getSleepSessions().first()
+            val updated = transform(current)
+                .filter { it.endEpochSecond > it.startEpochSecond }
+                .distinctBy { it.id }
+                .sortedBy { it.startEpochSecond }
+            deviceStore.saveSleepSessions(updated)
+            syncSleepToHealthConnect(updated)
+            val ready = (_uiState.value as? DashboardUiState.Ready) ?: lastReadyState
+                ?: return@withLock
+            val newState = ready.copy(sleepSessions = updated)
+            lastReadyState = newState
+            _uiState.value = newState
+        }
+    }
+
+    /**
+     * Mirrors the stored sleep sessions into Health Connect: active sessions are (re)written
+     * under their stable ids, and records for removed sessions are deleted.
+     */
+    private suspend fun syncSleepToHealthConnect(sessions: List<SleepSession>) {
+        sleepHcMutex.withLock {
+            if (!deviceStore.isSleepHcUuidMigrated().first()) {
+                if (!healthConnectClient.deleteAllOwnSleepSessions()) {
+                    Log.w(VM_TAG, "Sleep id migration skipped; will retry")
+                    return@withLock
+                }
+                deviceStore.saveWrittenSleepRecordIds(emptySet())
+                deviceStore.setSleepHcUuidMigrated()
+            }
+            // Only user-confirmed sessions are exported. Detections stay local until confirmed.
+            val active = sessions.filter {
+                !it.dismissed &&
+                    it.source == SleepSessionSource.USER &&
+                    it.endEpochSecond > it.startEpochSecond
+            }
+            val previous = deviceStore.getWrittenSleepRecordIds().first()
+            val desired = active.map { it.id }.toSet()
+            val stale = previous - desired
+            if (stale.isNotEmpty()) {
+                healthConnectClient.deleteSleepSessions(stale.toList())
+            }
+            val written = healthConnectClient.writeSleepSessions(active).toSet()
+            deviceStore.saveWrittenSleepRecordIds((previous - stale) + written)
+            if (written.isNotEmpty() || stale.isNotEmpty()) {
+                deviceStore.saveHcSleepWrite(Instant.now().epochSecond, written.size)
+            }
+        }
     }
 
     // ── Detail screen state ──────────────────────────────────────────────

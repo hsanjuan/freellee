@@ -4,6 +4,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 /** Formats an elapsed duration in milliseconds as `HH:mm:ss`. */
 fun formatDuration(millis: Int): String {
@@ -18,31 +19,34 @@ fun formatDuration(millis: Int): String {
 fun formatTimeOnly(instant: Instant): String =
     DateTimeFormatter.ofPattern("HH:mm:ss").format(instant.atZone(ZoneId.systemDefault()))
 
-/** Formats a time range as `From HH:mm to HH:mm`, e.g. for a step interval. */
-fun formatClockRange(start: Instant, end: Instant): String {
-    val timeFmt = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault())
-    return "From ${timeFmt.format(start)} to ${timeFmt.format(end)}"
+/**
+ * Formats a sleep duration as `Xh Ym`, or `Ym` below one hour.
+ */
+fun formatSleepDuration(seconds: Long): String {
+    val minutes = (seconds / 60).coerceAtLeast(0)
+    val hours = minutes / 60
+    val remaining = minutes % 60
+    return if (hours > 0) "${hours}h ${remaining}m" else "${remaining}m"
 }
 
 /**
- * Formats an interval as `Today from HH:mm to HH:mm`, falling back to `Yesterday` or a
- * short date for older intervals.
+ * Formats a sleep session as local times (`HH:mm–HH:mm`), adding the date when the session
+ * crosses midnight.
  */
-fun formatIntervalRange(
-    start: Instant,
-    end: Instant,
-    today: LocalDate = LocalDate.now(),
+fun formatSleepRange(
+    startEpochSecond: Long,
+    endEpochSecond: Long,
+    zone: ZoneId = ZoneId.systemDefault(),
 ): String {
-    val zone = ZoneId.systemDefault()
-    val startLocal = start.atZone(zone)
-    val endLocal = end.atZone(zone)
-    val day = when (startLocal.toLocalDate()) {
-        today -> "Today"
-        today.minusDays(1) -> "Yesterday"
-        else -> DateTimeFormatter.ofPattern("MMM d").format(startLocal)
+    val start = Instant.ofEpochSecond(startEpochSecond).atZone(zone)
+    val end = Instant.ofEpochSecond(endEpochSecond).atZone(zone)
+    val time = DateTimeFormatter.ofPattern("HH:mm", Locale.getDefault())
+    return if (start.toLocalDate() == end.toLocalDate()) {
+        "${time.format(start)}–${time.format(end)}"
+    } else {
+        val dateTime = DateTimeFormatter.ofPattern("MMM d HH:mm", Locale.getDefault())
+        "${dateTime.format(start)} – ${dateTime.format(end)}"
     }
-    val timeFmt = DateTimeFormatter.ofPattern("HH:mm")
-    return "$day from ${timeFmt.format(startLocal)} to ${timeFmt.format(endLocal)}"
 }
 
 /**

@@ -24,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.platform.LocalDensity
@@ -34,10 +35,13 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import link.hector.freellee.ui.theme.AccentAmber
 import link.hector.freellee.ui.theme.AccentGreen
 import link.hector.freellee.ui.theme.TextSecondary
 import link.hector.freellee.ui.theme.TextTertiary
+import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.ceil
@@ -59,6 +63,7 @@ fun StepsBarChart(
 ) {
     val days = data.days
     val reference = data.referenceAverage
+    val today = data.today
     val maxValue = maxOf(
         days.maxOfOrNull { it.steps }?.toDouble() ?: 0.0,
         reference ?: 0.0,
@@ -78,9 +83,27 @@ fun StepsBarChart(
         color = TextTertiary,
         fontSize = 10.sp,
     )
+    val missingLabelStyle = labelStyle.copy(color = TextTertiary.copy(alpha = 0.45f))
+    val todayLabelStyle = labelStyle.copy(color = AccentAmber)
     val textMeasurer = rememberTextMeasurer()
-    val dayLabelLayouts = remember(days, labelStyle, textMeasurer) {
-        days.map { textMeasurer.measure(it.date.dayOfMonth.toString(), labelStyle) }
+    val dayFormatter = remember { DateTimeFormatter.ofPattern("EEE d", Locale.getDefault()) }
+    val dayLabelLayouts = remember(
+        days,
+        today,
+        labelStyle,
+        missingLabelStyle,
+        todayLabelStyle,
+        textMeasurer,
+        dayFormatter,
+    ) {
+        days.map { day ->
+            val style = when {
+                day.date == today -> todayLabelStyle
+                !day.hasData -> missingLabelStyle
+                else -> labelStyle
+            }
+            textMeasurer.measure(dayFormatter.format(day.date), style)
+        }
     }
     val gridColor = TextTertiary.copy(alpha = 0.18f)
     val barColor = AccentGreen
@@ -141,6 +164,19 @@ fun StepsBarChart(
                             val plotHeight = (bottom - top).coerceAtLeast(0f)
                             val slotWidth = if (days.isEmpty()) 0f else (right - left) / days.size
 
+                            // Week boundaries: a separator between Sunday and Monday.
+                            days.forEachIndexed { index, day ->
+                                if (day.date.dayOfWeek.value == 7) {
+                                    val x = left + slotWidth * (index + 1)
+                                    drawLine(
+                                        color = TextTertiary.copy(alpha = 0.35f),
+                                        start = Offset(x, top),
+                                        end = Offset(x, bottom),
+                                        strokeWidth = 1.dp.toPx(),
+                                    )
+                                }
+                            }
+
                             ticks.forEach { value ->
                                 val y = bottom - (value / axisMax * plotHeight).toFloat()
                                 drawLine(
@@ -163,9 +199,18 @@ fun StepsBarChart(
                                     ),
                                 )
 
-                                if (day.steps <= 0) return@forEachIndexed
+                                if (!day.hasData) return@forEachIndexed
                                 val barWidth = slotWidth * 0.55f
                                 val barLeft = slotStart + (slotWidth - barWidth) / 2f
+                                if (day.steps <= 0) {
+                                    // A genuine zero with synced data still gets a baseline tick.
+                                    drawRect(
+                                        color = barColor.copy(alpha = 0.5f),
+                                        topLeft = Offset(barLeft, bottom - 1.dp.toPx()),
+                                        size = Size(barWidth, 1.dp.toPx()),
+                                    )
+                                    return@forEachIndexed
+                                }
                                 val barHeight = (day.steps / axisMax * plotHeight).toFloat()
                                 val barTop = bottom - barHeight
                                 val radius = min(4.dp.toPx(), barHeight / 2f)
@@ -183,7 +228,10 @@ fun StepsBarChart(
                                     lineTo(barLeft + barWidth, bottom)
                                     close()
                                 }
-                                drawPath(path = path, color = barColor)
+                                drawPath(
+                                    path = path,
+                                    color = if (day.date == today) AccentAmber else barColor,
+                                )
                             }
 
                             reference?.let { value ->
@@ -201,7 +249,7 @@ fun StepsBarChart(
                         }
                     }
 
-                    if (days.all { it.steps == 0 }) {
+                    if (days.none { it.hasData }) {
                         Text(
                             text = "No step data yet",
                             style = MaterialTheme.typography.bodySmall,
@@ -216,10 +264,116 @@ fun StepsBarChart(
             ChartLegend(
                 entries = buildList {
                     add(LegendEntry("Daily steps", barColor))
+                    add(LegendEntry("Today", AccentAmber))
                     if (reference != null) {
-                        add(LegendEntry("7-day average", referenceColor, dashed = true))
+                        add(
+                            LegendEntry(
+                                "7-day avg ${formatStepAxis(reference)}",
+                                referenceColor,
+                                dashed = true,
+                            ),
+                        )
                     }
                 },
+            )
+        }
+    }
+}
+
+@Composable
+fun TodayStepsChart(
+    data: StepsChartData,
+    modifier: Modifier = Modifier,
+) {
+    val intervals = data.todayIntervals
+    if (intervals.isEmpty()) {
+        Text(
+            text = "No steps today yet",
+            style = MaterialTheme.typography.bodySmall,
+            color = TextTertiary,
+            modifier = modifier,
+        )
+        return
+    }
+
+    val zone = remember { ZoneId.systemDefault() }
+    val dayStart = remember(data.today, zone) {
+        data.today.atStartOfDay(zone).toEpochSecond()
+    }
+    val maxSteps = remember(intervals) { intervals.maxOf { it.steps }.coerceAtLeast(1) }
+    val labelStyle = MaterialTheme.typography.labelSmall.copy(
+        color = TextTertiary,
+        fontSize = 10.sp,
+    )
+    val textMeasurer = rememberTextMeasurer()
+    val hourFormatter = remember(zone) {
+        DateTimeFormatter.ofPattern("HH:mm", Locale.getDefault()).withZone(zone)
+    }
+    val ticks = remember(dayStart, labelStyle, textMeasurer, hourFormatter) {
+        listOf(0, 6, 12, 18).map { hour ->
+            val epoch = dayStart + hour * 3_600L
+            textMeasurer.measure(
+                hourFormatter.format(Instant.ofEpochSecond(epoch)),
+                labelStyle,
+            ) to hour
+        }
+    }
+    val gridColor = TextTertiary.copy(alpha = 0.18f)
+
+    Canvas(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(64.dp)
+            .semantics { contentDescription = "Today's steps by interval" },
+    ) {
+        val left = 0f
+        val right = size.width
+        val top = 4.dp.toPx()
+        val bottom = size.height - 16.dp.toPx()
+        val plotHeight = (bottom - top).coerceAtLeast(1f)
+        val daySeconds = 24f * 3_600f
+
+        fun xForOffset(offsetSeconds: Float): Float =
+            left + (offsetSeconds / daySeconds).coerceIn(0f, 1f) * (right - left)
+
+        drawLine(
+            color = gridColor,
+            start = Offset(left, bottom),
+            end = Offset(right, bottom),
+            strokeWidth = 1.dp.toPx(),
+        )
+        ticks.forEach { (layout, hour) ->
+            val x = xForOffset(hour * 3_600f)
+            if (hour > 0) {
+                drawLine(
+                    color = gridColor,
+                    start = Offset(x, top),
+                    end = Offset(x, bottom),
+                    strokeWidth = 1.dp.toPx(),
+                )
+            }
+            drawText(
+                textLayoutResult = layout,
+                topLeft = Offset(
+                    x = (x - layout.size.width / 2f)
+                        .coerceIn(0f, size.width - layout.size.width),
+                    y = bottom + 3.dp.toPx(),
+                ),
+            )
+        }
+
+        intervals.forEach { interval ->
+            val startOffset = (interval.startEpochSecond - dayStart).toFloat()
+            val endOffset = (interval.endEpochSecond - dayStart).toFloat()
+            if (endOffset <= startOffset) return@forEach
+            val barLeft = xForOffset(startOffset)
+            val barRight = xForOffset(endOffset)
+            val barWidth = (barRight - barLeft - 0.5.dp.toPx()).coerceAtLeast(1f)
+            val barHeight = (interval.steps.toFloat() / maxSteps) * plotHeight
+            drawRect(
+                color = AccentGreen.copy(alpha = 0.85f),
+                topLeft = Offset(barLeft, bottom - barHeight),
+                size = Size(barWidth, barHeight),
             )
         }
     }

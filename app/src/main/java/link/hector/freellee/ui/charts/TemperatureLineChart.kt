@@ -24,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
@@ -37,8 +38,8 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import link.hector.freellee.data.TemperaturePeriod
 import link.hector.freellee.ui.theme.AccentAmber
-import link.hector.freellee.ui.theme.AccentPurple
 import link.hector.freellee.ui.theme.AccentTeal
 import link.hector.freellee.ui.theme.TextSecondary
 import link.hector.freellee.ui.theme.TextTertiary
@@ -49,6 +50,13 @@ import java.util.Locale
 import kotlin.math.roundToInt
 
 private val TEMPERATURE_Y_AXIS_WIDTH = 44.dp
+
+/** One day-part slice of the chart, used for the separators and labels above the plot. */
+private data class ChartPeriodSegment(
+    val startEpochSecond: Long,
+    val endEpochSecond: Long,
+    val period: TemperaturePeriod,
+)
 
 /**
  * Line chart of hourly skin-temperature averages. The whole stored range is drawn into a
@@ -61,15 +69,13 @@ fun TemperatureLineChart(
 ) {
     val zone = remember { ZoneId.systemDefault() }
     val points = data.points
-    val hourlyAverages = data.hourlyAverages
     val baselines = data.baselines
     val windowStart = data.windowStartEpochSecond
     val endHour = data.endHourEpochSecond
     val totalHours = data.totalHours
 
     val allValues = buildList {
-        points.mapNotNullTo(this) { it.averageCelsius }
-        hourlyAverages.mapNotNullTo(this) { it.averageCelsius }
+        points.mapNotNullTo(this) { it.medianCelsius }
         baselines.mapTo(this) { it.celsius }
     }
     val ticks = temperatureAxisTicks(allValues)
@@ -92,7 +98,6 @@ fun TemperatureLineChart(
     val gridColor = TextTertiary.copy(alpha = 0.18f)
     val measuredColor = AccentAmber
     val baselineColor = AccentTeal
-    val averageColor = AccentPurple.copy(alpha = 0.85f)
     val timeFormatter = remember(zone) {
         DateTimeFormatter.ofPattern("HH:mm", Locale.getDefault()).withZone(zone)
     }
@@ -104,6 +109,40 @@ fun TemperatureLineChart(
                 timeFormatter.format(Instant.ofEpochSecond(point.startEpochSecond)),
                 labelStyle,
             )
+        }
+    }
+    // Pre-measure the four day-part labels once instead of once per segment per frame.
+    val periodLabelLayouts = remember(labelStyle, textMeasurer) {
+        TemperaturePeriod.entries.associateWith { textMeasurer.measure(it.label, labelStyle) }
+    }
+    // Day-part boundaries (00:00, 06:00, 12:00, 18:00) clipped to the visible range.
+    val periodSegments = remember(windowStart, endHour, zone) {
+        val starts = mutableListOf<Pair<Long, TemperaturePeriod>>()
+        var day = Instant.ofEpochSecond(windowStart).atZone(zone).toLocalDate().minusDays(1)
+        val lastDay = Instant.ofEpochSecond(endHour).atZone(zone).toLocalDate().plusDays(1)
+        val chronology = listOf(
+            TemperaturePeriod.NIGHT,
+            TemperaturePeriod.MORNING,
+            TemperaturePeriod.AFTERNOON,
+            TemperaturePeriod.EVENING,
+        )
+        while (!day.isAfter(lastDay)) {
+            chronology.forEach { period ->
+                starts += day.atTime(period.hours.first, 0)
+                    .atZone(zone)
+                    .toEpochSecond() to period
+            }
+            day = day.plusDays(1)
+        }
+        starts.sortBy { it.first }
+        buildList {
+            starts.zipWithNext().forEach { (current, next) ->
+                val from = maxOf(current.first, windowStart)
+                val to = minOf(next.first, endHour)
+                if (to > from) {
+                    add(ChartPeriodSegment(from, to, current.second))
+                }
+            }
         }
     }
 
@@ -194,6 +233,51 @@ fun TemperatureLineChart(
                                 )
                             }
 
+                            // Time since the last sync: the readings are not missing, just pending.
+                            data.unsyncedRange?.let { range ->
+                                val xStart = xFor(range.startEpochSecond.coerceAtLeast(windowStart))
+                                val xEnd = xFor(range.endEpochSecond.coerceAtMost(endHour))
+                                if (xEnd > xStart) {
+                                    drawRect(
+                                        color = TextTertiary.copy(alpha = 0.06f),
+                                        topLeft = Offset(xStart, top),
+                                        size = Size(xEnd - xStart, plotHeight),
+                                    )
+                                    var stripeX = xStart
+                                    while (stripeX < xEnd) {
+                                        drawLine(
+                                            color = TextTertiary.copy(alpha = 0.22f),
+                                            start = Offset(stripeX, top),
+                                            end = Offset(stripeX, top + plotHeight),
+                                            strokeWidth = 1.dp.toPx(),
+                                        )
+                                        stripeX += 6.dp.toPx()
+                                    }
+                                    if (xEnd - xStart > 56.dp.toPx()) {
+                                        val layout = textMeasurer.measure("unsynced", labelStyle)
+                                        drawText(
+                                            textLayoutResult = layout,
+                                            topLeft = Offset(
+                                                x = (xStart + xEnd) / 2f - layout.size.width / 2f,
+                                                y = top + 4.dp.toPx(),
+                                            ),
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Shade gaps with no valid readings (not worn, outdoors, spike filtered out).
+                            data.notWornRanges.forEach { range ->
+                                val xStart = xFor(range.startEpochSecond.coerceAtLeast(windowStart))
+                                val xEnd = xFor(range.endEpochSecond.coerceAtMost(endHour))
+                                if (xEnd <= xStart) return@forEach
+                                drawRect(
+                                    color = TextTertiary.copy(alpha = 0.18f),
+                                    topLeft = Offset(xStart, top),
+                                    size = Size(xEnd - xStart, plotHeight),
+                                )
+                            }
+
                             val dashEffect = PathEffect.dashPathEffect(
                                 floatArrayOf(6.dp.toPx(), 5.dp.toPx()),
                             )
@@ -222,42 +306,15 @@ fun TemperatureLineChart(
                                 previousBaseline = segment
                             }
 
-                            val averagePath = Path()
-                            var averageDrawing = false
-                            hourlyAverages.forEach { point ->
-                                val average = point.averageCelsius
-                                if (average == null) {
-                                    averageDrawing = false
-                                } else {
-                                    val x = xFor((point.startEpochSecond + point.endEpochSecond) / 2)
-                                    val y = yFor(average)
-                                    if (averageDrawing) {
-                                        averagePath.lineTo(x, y)
-                                    } else {
-                                        averagePath.moveTo(x, y)
-                                        averageDrawing = true
-                                    }
-                                }
-                            }
-                            drawPath(
-                                path = averagePath,
-                                color = averageColor,
-                                style = Stroke(
-                                    width = 1.75.dp.toPx(),
-                                    cap = StrokeCap.Round,
-                                    join = StrokeJoin.Round,
-                                ),
-                            )
-
                             val path = Path()
                             var drawing = false
                             points.forEach { point ->
-                                val average = point.averageCelsius
-                                if (average == null) {
+                                val median = point.medianCelsius
+                                if (median == null) {
                                     drawing = false
                                 } else {
                                     val x = xFor((point.startEpochSecond + point.endEpochSecond) / 2)
-                                    val y = yFor(average)
+                                    val y = yFor(median)
                                     if (drawing) {
                                         path.lineTo(x, y)
                                     } else {
@@ -276,24 +333,52 @@ fun TemperatureLineChart(
                                 ),
                             )
                             points.forEach { point ->
-                                val average = point.averageCelsius ?: return@forEach
+                                val median = point.medianCelsius ?: return@forEach
                                 drawCircle(
                                     color = measuredColor,
                                     radius = 2.5.dp.toPx(),
                                     center = Offset(
                                         xFor((point.startEpochSecond + point.endEpochSecond) / 2),
-                                        yFor(average),
+                                        yFor(median),
                                     ),
                                 )
+                            }
+
+                            // Day-part separators and labels, drawn last so they stay legible.
+                            val visibleStart = scrollState.value.toFloat()
+                            val visibleEnd = visibleStart + viewportWidthPx
+                            periodSegments.forEach { segment ->
+                                val xStart = xFor(segment.startEpochSecond)
+                                val xEnd = xFor(segment.endEpochSecond)
+                                // Segments scrolled out of view cost nothing to skip.
+                                if (xEnd < visibleStart || xStart > visibleEnd) return@forEach
+                                if (xStart > left + 0.5f) {
+                                    drawLine(
+                                        color = TextTertiary.copy(alpha = 0.4f),
+                                        start = Offset(xStart, top),
+                                        end = Offset(xStart, bottom),
+                                        strokeWidth = 1.dp.toPx(),
+                                    )
+                                }
+                                val layout = periodLabelLayouts.getValue(segment.period)
+                                val labelLeft = (xStart + xEnd) / 2f - layout.size.width / 2f
+                                val labelRight = labelLeft + layout.size.width
+                                // Skip labels cut by the viewport edge instead of showing a
+                                // stray letter when the chart is scrolled.
+                                if (xEnd - xStart > layout.size.width + 8.dp.toPx() &&
+                                    labelLeft >= visibleStart &&
+                                    labelRight <= visibleEnd
+                                ) {
+                                    drawText(
+                                        textLayoutResult = layout,
+                                        topLeft = Offset(labelLeft, top + 2.dp.toPx()),
+                                    )
+                                }
                             }
                         }
                     }
 
-                    if (
-                        points.all { it.averageCelsius == null } &&
-                        hourlyAverages.all { it.averageCelsius == null } &&
-                        baselines.isEmpty()
-                    ) {
+                    if (points.all { it.medianCelsius == null } && baselines.isEmpty()) {
                         Text(
                             text = "No temperature readings yet",
                             style = MaterialTheme.typography.bodySmall,
@@ -309,10 +394,26 @@ fun TemperatureLineChart(
                 entries = buildList {
                     add(LegendEntry("Measured", measuredColor))
                     if (baselines.isNotEmpty()) {
-                        add(LegendEntry("Baseline", baselineColor, dashed = true))
+                        add(LegendEntry("Usual", baselineColor, dashed = true))
                     }
-                    if (hourlyAverages.any { it.averageCelsius != null }) {
-                        add(LegendEntry("Hourly average", averageColor))
+                    if (data.notWornRanges.isNotEmpty()) {
+                        add(
+                            LegendEntry(
+                                "No readings",
+                                TextTertiary.copy(alpha = 0.18f),
+                                band = true,
+                            ),
+                        )
+                    }
+                    if (data.unsyncedRange != null) {
+                        add(
+                            LegendEntry(
+                                "Unsynced",
+                                TextTertiary,
+                                band = true,
+                                hatched = true,
+                            ),
+                        )
                     }
                 },
             )

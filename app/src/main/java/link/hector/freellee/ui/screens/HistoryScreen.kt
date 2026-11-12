@@ -1,5 +1,7 @@
 package link.hector.freellee.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -27,19 +29,23 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import link.hector.freellee.data.temperatureAggregatesCsv
 import link.hector.freellee.ui.theme.AccentAmber
 import link.hector.freellee.ui.theme.AccentBlue
 import link.hector.freellee.ui.theme.AccentGreen
@@ -54,6 +60,7 @@ import link.hector.freellee.viewmodel.DashboardUiState
 import link.hector.freellee.viewmodel.HistoryEntry
 import link.hector.freellee.viewmodel.OlleeViewModel
 import java.time.Instant
+import java.time.LocalDate
 
 /**
  * History tab: one summary card per record type. Tapping a card opens the full,
@@ -82,6 +89,23 @@ fun HistoryScreen(
     val isRefreshing = uiState is DashboardUiState.Connecting ||
         uiState is DashboardUiState.Connected ||
         uiState is DashboardUiState.Syncing
+
+    val context = LocalContext.current
+    // Read the aggregates when the picker returns rather than from a snapshot taken before the
+    // picker opened: the callback is remembered, so a captured value could be stale.
+    val temperatureAggregates by rememberUpdatedState(state?.temperatureAggregates.orEmpty())
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/csv"),
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                val csv = temperatureAggregatesCsv(temperatureAggregates)
+                context.contentResolver.openOutputStream(uri)?.use { stream ->
+                    stream.write(csv.toByteArray())
+                }
+            }
+        }
+    }
 
     val steps = state?.stepIntervals.orEmpty()
         .map { HistoryEntry(it.steps, it.tStart, it.tEnd, it.syncTimestamp) }
@@ -166,6 +190,18 @@ fun HistoryScreen(
                         viewModel.showRecordsDetail(card.title, card.records)
                     },
                 )
+            }
+
+            item {
+                TextButton(
+                    onClick = {
+                        exportLauncher.launch("freellee-temperature-${LocalDate.now()}.csv")
+                    },
+                    enabled = state?.temperatureAggregates?.isNotEmpty() == true,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Export daily temperature CSV")
+                }
             }
         }
     }

@@ -2,6 +2,7 @@ package link.hector.freellee.ui.charts
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -37,6 +38,10 @@ internal data class LegendEntry(
     val label: String,
     val color: Color,
     val dashed: Boolean = false,
+    /** Draw a filled block (a shaded region) instead of a line. */
+    val band: Boolean = false,
+    /** Draw vertical stripes inside the block (used for regions, not measured data). */
+    val hatched: Boolean = false,
 )
 
 /** Rounds [rawStep] up to a visually pleasant 1/2/5 × 10ⁿ value. */
@@ -129,16 +134,34 @@ internal fun ChartLegend(
     entries: List<LegendEntry>,
     modifier: Modifier = Modifier,
 ) {
-    Row(
+    // Wrap instead of clipping: the temperature chart can show up to four entries, which does
+    // not fit on a narrow screen.
+    FlowRow(
         modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(16.dp),
-        verticalAlignment = Alignment.CenterVertically,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         entries.forEach { entry ->
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Canvas(modifier = Modifier.size(width = 18.dp, height = 8.dp)) {
                     val y = size.height / 2f
-                    if (entry.dashed) {
+                    if (entry.band) {
+                        if (entry.hatched) {
+                            drawRect(color = entry.color.copy(alpha = 0.18f))
+                            var x = 1.dp.toPx()
+                            while (x < size.width) {
+                                drawLine(
+                                    color = entry.color.copy(alpha = 0.75f),
+                                    start = Offset(x, 0f),
+                                    end = Offset(x, size.height),
+                                    strokeWidth = 1.dp.toPx(),
+                                )
+                                x += 4.dp.toPx()
+                            }
+                        } else {
+                            drawRect(color = entry.color)
+                        }
+                    } else if (entry.dashed) {
                         drawLine(
                             color = entry.color,
                             start = Offset(0f, y),

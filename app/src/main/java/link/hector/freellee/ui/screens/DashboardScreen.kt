@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -20,6 +21,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
+import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Thermostat
 import androidx.compose.material3.ButtonDefaults
@@ -53,28 +55,29 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import link.hector.freellee.data.DeviceStore.RecordItem
-import link.hector.freellee.data.DeviceStore.StepInterval
-import link.hector.freellee.data.TemperatureInterval
-import link.hector.freellee.data.currentTemperatureInterval
-import link.hector.freellee.data.previousTemperatureIntervals
+import link.hector.freellee.data.SleepInsights
+import link.hector.freellee.data.SleepSessionKind
+import link.hector.freellee.data.SleepSessionSummary
+import link.hector.freellee.data.TemperaturePeriodSummary
 import link.hector.freellee.ui.charts.DashboardChartData
 import link.hector.freellee.ui.charts.StepsBarChart
 import link.hector.freellee.ui.charts.StepsChartData
 import link.hector.freellee.ui.charts.TemperatureChartData
 import link.hector.freellee.ui.charts.TemperatureLineChart
+import link.hector.freellee.ui.charts.TodayStepsChart
 import link.hector.freellee.ui.components.WatchStatusIndicator
 import link.hector.freellee.ui.theme.AccentAmber
 import link.hector.freellee.ui.theme.AccentBlue
 import link.hector.freellee.ui.theme.AccentGreen
+import link.hector.freellee.ui.theme.AccentPurple
 import link.hector.freellee.ui.theme.CardBackground
 import link.hector.freellee.ui.theme.StatusError
 import link.hector.freellee.ui.theme.SurfaceDark
 import link.hector.freellee.ui.theme.TextPrimary
 import link.hector.freellee.ui.theme.TextSecondary
 import link.hector.freellee.ui.theme.TextTertiary
-import link.hector.freellee.util.formatClockRange
-import link.hector.freellee.util.formatIntervalRange
+import link.hector.freellee.util.formatSleepDuration
+import link.hector.freellee.util.formatSleepRange
 import link.hector.freellee.util.formatTimestamp
 import link.hector.freellee.viewmodel.DashboardUiState
 import link.hector.freellee.viewmodel.HeartRateStats
@@ -82,6 +85,10 @@ import link.hector.freellee.viewmodel.HistoryEntry
 import link.hector.freellee.viewmodel.OlleeViewModel
 import link.hector.freellee.viewmodel.todayHeartRateStats
 import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -94,6 +101,7 @@ fun DashboardScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val bleState by viewModel.connectionState.collectAsState()
     val hasPairedDevice by viewModel.hasPairedDevice.collectAsState()
+    val advancedEnabled by viewModel.advancedEnabled.collectAsState()
 
     LaunchedEffect(uiState) {
         if (uiState is DashboardUiState.Error) {
@@ -163,6 +171,7 @@ fun DashboardScreen(
             UnifiedDashboard(
                 state = dashboardState,
                 chartData = chartData,
+                sleepEnabled = advancedEnabled,
             ) {
                 WatchStatusIndicator(
                     uiState = uiState,
@@ -180,31 +189,18 @@ fun DashboardScreen(
 private fun UnifiedDashboard(
     state: DashboardUiState.Ready?,
     chartData: DashboardChartData,
+    sleepEnabled: Boolean,
     statusIndicator: @Composable () -> Unit,
 ) {
     val dailySteps = state?.steps ?: 0
-    val weeklySteps = state?.weeklySteps ?: 0
-    val stepIntervals = state?.stepIntervals ?: emptyList()
-    val lastStepInterval = stepIntervals.maxByOrNull { it.tStart }
     val heartRateRecords = state?.heartRateRecords ?: emptyList()
     val temperatureRecords = state?.temperatureRecords ?: emptyList()
 
-    val nowEpochSecond = remember(heartRateRecords, temperatureRecords, stepIntervals) {
+    val nowEpochSecond = remember(heartRateRecords, temperatureRecords) {
         Instant.now().epochSecond
     }
     val heartRate = remember(heartRateRecords, nowEpochSecond) {
         todayHeartRateStats(heartRateRecords, nowEpochSecond)
-    }
-    val temperatureReadings = remember(temperatureRecords) {
-        temperatureRecords.map {
-            RecordItem(0, it.watchTimestampStart, it.watchTimestampEnd, it.value, it.syncTimestamp)
-        }
-    }
-    val currentTemperature = remember(temperatureReadings, nowEpochSecond) {
-        currentTemperatureInterval(temperatureReadings, nowEpochSecond)
-    }
-    val previousTemperatures = remember(temperatureReadings, nowEpochSecond) {
-        previousTemperatureIntervals(temperatureReadings, count = 3, nowEpochSecond = nowEpochSecond)
     }
     val lastHeartRate = heartRateRecords.lastOrNull()
     val lastTemperature = temperatureRecords.lastOrNull()
@@ -219,22 +215,26 @@ private fun UnifiedDashboard(
             statusIndicator()
         }
 
+        item {
+            TemperatureSection(
+                lastRecord = lastTemperature,
+                chartData = chartData.temperature,
+            )
+        }
+
+        if (sleepEnabled) {
+            item {
+                SleepSection(sleep = chartData.sleep)
+            }
+        }
+
         // Daily steps + rolling seven-day steps
         item {
             StepsSection(
                 dailySteps = dailySteps,
-                weeklySteps = weeklySteps,
-                lastInterval = lastStepInterval,
+                stepGoal = state?.stepGoal,
+                lastSyncTime = state?.lastSyncTime,
                 chartData = chartData.steps,
-            )
-        }
-
-        item {
-            TemperatureSection(
-                current = currentTemperature,
-                previous = previousTemperatures,
-                lastRecord = lastTemperature,
-                chartData = chartData.temperature,
             )
         }
 
@@ -250,10 +250,14 @@ private fun UnifiedDashboard(
 @Composable
 private fun StepsSection(
     dailySteps: Int,
-    weeklySteps: Int,
-    lastInterval: StepInterval?,
+    stepGoal: Int?,
+    lastSyncTime: Instant?,
     chartData: StepsChartData,
 ) {
+    val syncTime = remember {
+        DateTimeFormatter.ofPattern("HH:mm", Locale.getDefault())
+            .withZone(ZoneId.systemDefault())
+    }
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = CardBackground),
@@ -263,35 +267,67 @@ private fun StepsSection(
                 icon = Icons.AutoMirrored.Filled.DirectionsWalk,
                 accent = AccentGreen,
                 title = "Steps",
-                subtitle = lastInterval?.let {
-                    formatClockRange(
-                        start = Instant.ofEpochSecond(it.tStart),
-                        end = Instant.ofEpochSecond(it.tEnd),
-                    )
-                } ?: "Never synced",
-                trailing = lastInterval?.let { "${it.steps.formatNumber()} steps" },
+                subtitle = lastSyncTime?.let { "Today · synced ${syncTime.format(it)}" } ?: "Today",
+                trailing = null,
             )
 
             Spacer(Modifier.height(16.dp))
+            if (stepGoal != null && stepGoal > 0) {
+                StepGoalProgress(steps = dailySteps, goal = stepGoal)
+                Spacer(Modifier.height(16.dp))
+            }
             StepsBarChart(
                 data = chartData,
                 modifier = Modifier.fillMaxWidth(),
             )
 
             Spacer(Modifier.height(16.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                StatBlock(
-                    label = "Today",
-                    value = dailySteps.formatNumber(),
-                    modifier = Modifier.weight(1f),
-                )
-                StatBlock(
-                    label = "Last 7 days",
-                    value = weeklySteps.formatNumber(),
-                    modifier = Modifier.weight(1f),
-                )
-            }
+            Text(
+                "Today by interval",
+                style = MaterialTheme.typography.labelLarge,
+                color = TextSecondary,
+            )
+            Spacer(Modifier.height(4.dp))
+            TodayStepsChart(
+                data = chartData,
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
+    }
+}
+
+@Composable
+private fun StepGoalProgress(steps: Int, goal: Int) {
+    val fraction = (steps.toDouble() / goal).coerceIn(0.0, 1.0).toFloat()
+    val percent = (steps.toDouble() / goal * 100).roundToInt()
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = "${steps.formatNumber()} / ${goal.formatNumber()} steps",
+            style = MaterialTheme.typography.bodyMedium,
+            color = TextSecondary,
+        )
+        Spacer(Modifier.weight(1f))
+        Text(
+            text = "$percent%",
+            style = MaterialTheme.typography.titleMedium,
+            color = AccentGreen,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+    Spacer(Modifier.height(6.dp))
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(6.dp)
+            .clip(RoundedCornerShape(3.dp))
+            .background(SurfaceDark),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(fraction)
+                .fillMaxHeight()
+                .background(AccentGreen),
+        )
     }
 }
 
@@ -345,11 +381,10 @@ private fun HeartRateSection(
 
 @Composable
 private fun TemperatureSection(
-    current: TemperatureInterval,
-    previous: List<TemperatureInterval>,
     lastRecord: HistoryEntry?,
     chartData: TemperatureChartData,
 ) {
+    val insights = chartData.insights
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = CardBackground),
@@ -365,7 +400,7 @@ private fun TemperatureSection(
                         formatTimestamp(Instant.ofEpochSecond(it.watchTimestampStart)),
                     )
                 } ?: "No measurements yet",
-                trailing = current.period.label,
+                trailing = insights.currentPeriod?.period?.label,
             )
 
             Spacer(Modifier.height(16.dp))
@@ -374,73 +409,94 @@ private fun TemperatureSection(
                 modifier = Modifier.fillMaxWidth(),
             )
 
-            Spacer(Modifier.height(16.dp))
-            Text(
-                "Current interval",
-                style = MaterialTheme.typography.labelLarge,
-                color = TextSecondary,
+            Spacer(Modifier.height(12.dp))
+            PeriodDeltasBlock(
+                periods = insights.todayPeriods,
+                modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                StatBlock(
-                    label = "Baseline",
-                    value = current.baselineCelsius?.let { "%.1f°C".format(it) } ?: "—",
-                    modifier = Modifier.weight(1f),
-                )
-                StatBlock(
-                    label = "Deviation",
-                    value = current.deviationCelsius.formatDeviation(),
-                    valueColor = current.deviationCelsius.deviationColor(),
-                    modifier = Modifier.weight(1f),
-                )
-            }
-
-            Spacer(Modifier.height(16.dp))
-            Text(
-                "Previous intervals",
-                style = MaterialTheme.typography.labelLarge,
-                color = TextSecondary,
+            CoverageStatBlock(
+                periods = insights.todayPeriods,
+                modifier = Modifier.fillMaxWidth(),
             )
-            Spacer(Modifier.height(8.dp))
+        }
+    }
+}
 
-            if (previous.isEmpty()) {
-                Text(
-                    "No completed intervals yet",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextTertiary,
-                )
-            } else {
-                Row(modifier = Modifier.fillMaxWidth()) {
+/** Today's deviation for each day part, in Night → Evening order. */
+@Composable
+private fun PeriodDeltasBlock(
+    periods: List<TemperaturePeriodSummary>,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .background(SurfaceDark, RoundedCornerShape(12.dp))
+            .padding(horizontal = 10.dp, vertical = 12.dp),
+    ) {
+        Text(
+            "Today's deltas",
+            style = MaterialTheme.typography.labelSmall,
+            color = TextTertiary,
+            maxLines = 1,
+        )
+        Spacer(Modifier.height(4.dp))
+        Row(modifier = Modifier.fillMaxWidth()) {
+            periods.forEach { summary ->
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        "Period",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = TextTertiary,
-                        modifier = Modifier.weight(1f),
+                        text = summary.deviationCelsius.formatDeviation(),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = summary.deviationCelsius.deviationColor(),
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
                     )
                     Text(
-                        "Baseline",
+                        text = summary.period.label,
                         style = MaterialTheme.typography.labelSmall,
                         color = TextTertiary,
-                        modifier = Modifier.width(76.dp),
-                        textAlign = TextAlign.End,
-                    )
-                    Text(
-                        "Deviation",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = TextTertiary,
-                        modifier = Modifier.width(84.dp),
-                        textAlign = TextAlign.End,
+                        maxLines = 1,
                     )
                 }
+            }
+        }
+    }
+}
 
-                previous.forEachIndexed { index, interval ->
-                    if (index > 0) {
-                        HorizontalDivider(
-                            color = TextTertiary.copy(alpha = 0.2f),
-                            modifier = Modifier.padding(vertical = 2.dp),
-                        )
-                    }
-                    TemperatureIntervalRow(interval)
+/** Today's valid-reading share for each day part, in Night → Evening order. */
+@Composable
+private fun CoverageStatBlock(
+    periods: List<TemperaturePeriodSummary>,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .background(SurfaceDark, RoundedCornerShape(12.dp))
+            .padding(horizontal = 10.dp, vertical = 12.dp),
+    ) {
+        Text(
+            "Valid readings",
+            style = MaterialTheme.typography.labelSmall,
+            color = TextTertiary,
+            maxLines = 1,
+        )
+        Spacer(Modifier.height(4.dp))
+        Row(modifier = Modifier.fillMaxWidth()) {
+            periods.forEach { summary ->
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = summary.coverage?.let { "${Math.round(it * 100)}%" } ?: "—",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = summary.coverage.coverageColor(),
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                    )
+                    Text(
+                        text = summary.period.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextTertiary,
+                        maxLines = 1,
+                    )
                 }
             }
         }
@@ -448,7 +504,88 @@ private fun TemperatureSection(
 }
 
 @Composable
-private fun TemperatureIntervalRow(interval: TemperatureInterval) {
+private fun SleepSection(sleep: SleepInsights) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = CardBackground),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            SectionHeader(
+                icon = Icons.Default.Bedtime,
+                accent = AccentPurple,
+                title = "Sleep",
+                subtitle = "Confirmed sessions only",
+                trailing = null,
+            )
+
+            Spacer(Modifier.height(16.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StatBlock(
+                    label = "Avg / day",
+                    value = sleep.averageDailySleepSecondsLast7?.let(::formatSleepDuration) ?: "—",
+                    modifier = Modifier.weight(1f),
+                )
+                StatBlock(
+                    label = "Last 24h",
+                    value = sleep.totalSleepSecondsLast24h?.let(::formatSleepDuration) ?: "—",
+                    modifier = Modifier.weight(1f),
+                )
+                StatBlock(
+                    label = "Vs last 3 nights",
+                    value = sleep.threeMainSleepDeviationCelsius.formatDeviation(),
+                    valueColor = sleep.threeMainSleepDeviationCelsius.deviationColor(),
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Spacer(Modifier.height(16.dp))
+
+            if (sleep.recentConfirmed.isEmpty()) {
+                Text(
+                    "Nothing confirmed in the last 48 hours.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextTertiary,
+                )
+            } else {
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        "Confirmed sleep",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextTertiary,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        "Duration",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextTertiary,
+                        modifier = Modifier.width(76.dp),
+                        textAlign = TextAlign.End,
+                    )
+                    Text(
+                        "Vs usual",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextTertiary,
+                        modifier = Modifier.width(84.dp),
+                        textAlign = TextAlign.End,
+                    )
+                }
+
+                sleep.recentConfirmed.forEachIndexed { index, summary ->
+                    if (index > 0) {
+                        HorizontalDivider(
+                            color = TextTertiary.copy(alpha = 0.2f),
+                            modifier = Modifier.padding(vertical = 2.dp),
+                        )
+                    }
+                    SleepSessionRow(summary)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SleepSessionRow(summary: SleepSessionSummary) {
+    val session = summary.session
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -457,20 +594,13 @@ private fun TemperatureIntervalRow(interval: TemperatureInterval) {
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                interval.period.label,
+                text = if (session.kind == SleepSessionKind.MAIN) "Main sleep" else "Nap",
                 style = MaterialTheme.typography.bodyLarge,
                 color = TextPrimary,
                 fontWeight = FontWeight.Medium,
             )
             Text(
-                text = if (interval.lastMeasuredAtEpochSecond != null) {
-                    formatIntervalRange(
-                        start = Instant.ofEpochSecond(interval.startEpochSecond),
-                        end = Instant.ofEpochSecond(interval.endEpochSecond),
-                    )
-                } else {
-                    "No readings in this period"
-                },
+                text = formatSleepRange(session.startEpochSecond, session.endEpochSecond),
                 style = MaterialTheme.typography.bodySmall,
                 color = TextTertiary,
                 maxLines = 1,
@@ -478,16 +608,16 @@ private fun TemperatureIntervalRow(interval: TemperatureInterval) {
             )
         }
         Text(
-            text = interval.baselineCelsius?.let { "%.1f°C".format(it) } ?: "—",
+            text = formatSleepDuration(session.durationSeconds),
             style = MaterialTheme.typography.titleMedium,
-            color = if (interval.baselineCelsius != null) TextPrimary else TextTertiary,
+            color = TextPrimary,
             modifier = Modifier.width(76.dp),
             textAlign = TextAlign.End,
         )
         Text(
-            text = interval.deviationCelsius.formatDeviation(),
+            text = summary.deviationCelsius.formatDeviation(),
             style = MaterialTheme.typography.titleMedium,
-            color = interval.deviationCelsius.deviationColor(),
+            color = summary.deviationCelsius.deviationColor(),
             modifier = Modifier.width(84.dp),
             textAlign = TextAlign.End,
         )
@@ -564,7 +694,7 @@ private fun StatBlock(
             label,
             style = MaterialTheme.typography.labelSmall,
             color = TextTertiary,
-            maxLines = 1,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
         Spacer(Modifier.height(4.dp))
@@ -591,6 +721,14 @@ private fun Double?.deviationColor(): Color = when {
     this > 0.05 -> AccentAmber
     this < -0.05 -> AccentBlue
     else -> TextSecondary
+}
+
+/** Green above 90 %, amber above 50 %, red otherwise. */
+private fun Double?.coverageColor(): Color = when {
+    this == null -> TextTertiary
+    this > 0.90 -> AccentGreen
+    this > 0.50 -> AccentAmber
+    else -> StatusError
 }
 
 private fun Int.formatNumber(): String {

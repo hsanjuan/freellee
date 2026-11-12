@@ -20,10 +20,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.DirectionsRun
+import androidx.compose.material.icons.filled.Bedtime
+import androidx.compose.material.icons.filled.Event
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Insights
-import androidx.compose.material.icons.filled.Numbers
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Watch
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -33,24 +34,33 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import link.hector.freellee.ble.WatchGattClient
 import link.hector.freellee.ble.WatchRepository
 import link.hector.freellee.data.DeviceStore
 import link.hector.freellee.data.HealthConnectClient
 import link.hector.freellee.permissions.AppPermissions
-import link.hector.freellee.ui.screens.ActivitiesScreen
 import link.hector.freellee.ui.screens.ConnectionScreen
-import link.hector.freellee.ui.screens.CounterEventsScreen
 import link.hector.freellee.ui.screens.DashboardScreen
+import link.hector.freellee.ui.screens.EventsScreen
 import link.hector.freellee.ui.screens.HistoryScreen
 import link.hector.freellee.ui.screens.PermissionBanner
 import link.hector.freellee.ui.screens.PermissionsOnboardingScreen
+import link.hector.freellee.ui.screens.SettingsScreen
+import link.hector.freellee.ui.screens.SleepScreen
 import link.hector.freellee.ui.theme.FreelleeTheme
 import link.hector.freellee.viewmodel.DeviceViewModel
 import link.hector.freellee.viewmodel.OlleeViewModel
@@ -208,30 +218,52 @@ private fun MainTabs(
     onOpenAppSettings: () -> Unit,
     onRequestHealthConnect: () -> Unit,
 ) {
-    val tabs = listOf(
-        "Data" to Icons.Default.Insights,
-        "History" to Icons.Default.History,
-        "Activities" to Icons.AutoMirrored.Filled.DirectionsRun,
-        "Counters" to Icons.Default.Numbers,
-        "Devices" to Icons.Default.Watch,
-    )
+    val advancedEnabled by olleeViewModel.advancedEnabled.collectAsState()
+    val tabs = remember(advancedEnabled) {
+        buildList {
+            add(MainTab("data", "Data", Icons.Default.Insights))
+            // The Sleep tab only makes sense with fine-grained step data.
+            if (advancedEnabled) add(MainTab("sleep", "Sleep", Icons.Default.Bedtime))
+            add(MainTab("history", "History", Icons.Default.History))
+            add(MainTab("events", "Events", Icons.Default.Event))
+            add(MainTab("devices", "Devices", Icons.Default.Watch))
+            add(MainTab("settings", "Settings", Icons.Default.Settings))
+        }
+    }
     val pagerState = rememberPagerState(pageCount = { tabs.size })
     val coroutineScope = rememberCoroutineScope()
+
+    // The tab list changes when advanced features are toggled, which shifts every index after
+    // Sleep. Track the destination by key so the user stays on the page they were looking at.
+    var selectedTabKey by rememberSaveable { mutableStateOf("data") }
+    LaunchedEffect(tabs) {
+        val index = tabs.indexOfFirst { it.key == selectedTabKey }
+        if (index >= 0 && index != pagerState.currentPage) {
+            pagerState.scrollToPage(index)
+        }
+    }
+    val currentTabs by rememberUpdatedState(tabs)
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.currentPage }.collect { page ->
+            currentTabs.getOrNull(page)?.let { selectedTabKey = it.key }
+        }
+    }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         bottomBar = {
             NavigationBar {
-                tabs.forEachIndexed { index, (title, icon) ->
+                tabs.forEachIndexed { index, tab ->
                     NavigationBarItem(
                         selected = pagerState.currentPage == index,
                         onClick = {
+                            selectedTabKey = tab.key
                             coroutineScope.launch {
                                 pagerState.animateScrollToPage(index)
                             }
                         },
-                        icon = { Icon(icon, contentDescription = title) },
-                        label = { Text(title) },
+                        icon = { Icon(tab.icon, contentDescription = tab.label) },
+                        label = { Text(tab.label) },
                     )
                 }
             }
@@ -253,37 +285,46 @@ private fun MainTabs(
                 state = pagerState,
                 modifier = Modifier.weight(1f),
             ) { page ->
-                when (page) {
-                    0 -> DashboardScreen(
+                when (tabs.getOrNull(page)?.key) {
+                    "data" -> DashboardScreen(
                         viewModel = olleeViewModel,
                         onSync = onSync,
                     )
-                    1 -> HistoryScreen(
+                    "sleep" -> SleepScreen(
                         viewModel = olleeViewModel,
                         onSync = onSync,
                     )
-                    2 -> ActivitiesScreen(
+                    "history" -> HistoryScreen(
+                        viewModel = olleeViewModel,
+                        onSync = onSync,
+                    )
+                    "events" -> EventsScreen(
                         deviceStore = deviceStore,
                         healthConnectClient = healthConnectClient,
                         onSync = onSync,
                         viewModel = olleeViewModel,
                     )
-                    3 -> CounterEventsScreen(
-                        deviceStore = deviceStore,
-                        healthConnectClient = healthConnectClient,
-                        onSync = onSync,
-                        viewModel = olleeViewModel,
-                    )
-                    4 -> ConnectionScreen(
+                    "devices" -> ConnectionScreen(
                         viewModel = deviceViewModel,
                         onConnectClick = { address -> deviceViewModel.connect(address) },
                         onDisconnect = { deviceViewModel.disconnect() },
+                    )
+                    "settings" -> SettingsScreen(
+                        viewModel = olleeViewModel,
+                        healthConnectClient = healthConnectClient,
                     )
                 }
             }
         }
     }
 }
+
+/** One bottom-bar destination. [key] keeps content mapping stable when tabs appear or disappear. */
+private data class MainTab(
+    val key: String,
+    val label: String,
+    val icon: ImageVector,
+)
 
 /** Walks the [Context] chain to find the hosting [Activity], or null for non-activity contexts. */
 private fun Context.findActivity(): Activity? {

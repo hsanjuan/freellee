@@ -18,6 +18,7 @@ import androidx.health.connect.client.records.metadata.Metadata
 import androidx.health.connect.client.units.Temperature
 import androidx.health.connect.client.units.TemperatureDelta
 import link.hector.freellee.DEFAULT_WATCH_NAME
+import link.hector.freellee.TEMPERATURE_SAMPLE_SECONDS
 import link.hector.freellee.data.CounterEventWriter
 import link.hector.freellee.data.DeviceStore.RecordItem
 import link.hector.freellee.data.DeviceStore.StepInterval
@@ -25,6 +26,7 @@ import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import java.util.UUID
 
 private const val TAG = "HealthConnectClient"
 
@@ -92,6 +94,38 @@ class HealthConnectClient(private val context: Context) {
             Log.w(TAG, "Error checking Health Connect availability", e)
             HealthConnectAvailability.UNSUPPORTED
         }
+    }
+
+    /** What Settings shows about Health Connect integration. */
+    data class HealthConnectStatus(
+        val availability: HealthConnectAvailability,
+        val sleepPermission: Boolean,
+        val temperaturePermission: Boolean,
+        val temperatureSupported: Boolean,
+    )
+
+    /** Reads the live permission state; never throws. */
+    suspend fun status(): HealthConnectStatus {
+        val availability = availability()
+        if (availability != HealthConnectAvailability.AVAILABLE) {
+            return HealthConnectStatus(availability, false, false, false)
+        }
+        val granted = try {
+            requireClient().permissionController.getGrantedPermissions()
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not read granted Health Connect permissions", e)
+            emptySet()
+        }
+        return HealthConnectStatus(
+            availability = availability,
+            sleepPermission = granted.contains(
+                HealthPermission.getWritePermission(SleepSessionRecord::class),
+            ),
+            temperaturePermission = granted.contains(
+                HealthPermission.getWritePermission(SkinTemperatureRecord::class),
+            ),
+            temperatureSupported = isSkinTemperatureAvailable(),
+        )
     }
 
     /**
@@ -359,6 +393,111 @@ class HealthConnectClient(private val context: Context) {
     }
 
     /**
+     * Writes automatically detected or user-confirmed sleep sessions.
+     *
+     * Unlike [writeSleepSession], which tags the first 30 minutes awake-in-bed for stopwatch
+     * recordings, detected sessions are already trimmed to the sleep window, so the whole
+     * interval is written as sleeping. The session id becomes the Health Connect client record
+     * id, so re-confirming or adjusting a session updates the existing record instead of
+     * adding a duplicate.
+     *
+     * Returns the ids that were written successfully.
+     */
+    suspend fun writeSleepSessions(sessions: List<SleepSession>): List<String> {
+        if (sessions.isEmpty()) return emptyList()
+        return try {
+            val hc = requireClient()
+            if (!hasPermission(SleepSessionRecord::class)) {
+                Log.w(TAG, "Sleep Write permission not granted — skipping sleep session write")
+                return emptyList()
+            }
+
+            val records = sessions.map { session ->
+                val startInstant = Instant.ofEpochSecond(session.startEpochSecond)
+                val endInstant = Instant.ofEpochSecond(session.endEpochSecond)
+                SleepSessionRecord(
+                    startTime = startInstant,
+                    startZoneOffset = null,
+                    endTime = endInstant,
+                    endZoneOffset = null,
+                    stages = listOf(
+                        SleepSessionRecord.Stage(
+                            startInstant,
+                            endInstant,
+                            SleepSessionRecord.STAGE_TYPE_SLEEPING,
+                        ),
+                    ),
+                    metadata = createMetadata(
+                        startInstant,
+                        endInstant,
+                        clientRecordIdFor(session.id),
+                    ),
+                )
+            }
+            hc.insertRecords(records)
+            Log.d(TAG, "Wrote ${records.size} sleep sessions to Health Connect")
+            sessions.map { it.id }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to write sleep sessions to Health Connect", e)
+            emptyList()
+        }
+    }
+
+    /** Removes sleep records previously written for these session ids. */
+    suspend fun deleteSleepSessions(sessionIds: List<String>) {
+        if (sessionIds.isEmpty()) return
+        try {
+            val hc = requireClient()
+            if (!hasPermission(SleepSessionRecord::class)) return
+            hc.deleteRecords(
+                SleepSessionRecord::class,
+                sessionIds.map { clientRecordIdFor(it) },
+                emptyList(),
+            )
+            Log.d(TAG, "Deleted ${sessionIds.size} stale sleep sessions from Health Connect")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to delete stale sleep sessions from Health Connect", e)
+        }
+    }
+
+    /**
+     * Health Connect requires client record ids to be UUIDs when deleting; a readable string is
+     * only accepted on insert. Derive a stable UUID from the session id so updates and deletes
+     * always address the same record.
+     */
+    private fun clientRecordIdFor(sessionId: String): String =
+        UUID.nameUUIDFromBytes("freellee_sleep_$sessionId".toByteArray()).toString()
+
+    /**
+     * One-time cleanup for sleep records written before ids became UUIDs. Those records cannot
+     * be addressed individually any more, so all sleep records previously written by this app
+     * are removed; the current sessions are written again right after.
+     *
+     * Returns false when the server could not be reached or the permission is missing, so the
+     * caller can retry instead of marking the migration done and leaving duplicates behind.
+     */
+    suspend fun deleteAllOwnSleepSessions(): Boolean {
+        return try {
+            val hc = requireClient()
+            if (!hasPermission(SleepSessionRecord::class)) return false
+            hc.deleteRecords(
+                SleepSessionRecord::class,
+                emptyList(),
+                listOf(context.packageName),
+            )
+            Log.d(TAG, "Deleted all sleep records written by this app")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to delete legacy sleep records", e)
+            false
+        }
+    }
+
+    private suspend fun hasPermission(recordClass: kotlin.reflect.KClass<out androidx.health.connect.client.records.Record>): Boolean =
+        requireClient().permissionController.getGrantedPermissions()
+            .contains(HealthPermission.getWritePermission(recordClass))
+
+    /**
      * Reads recent exercise sessions from Health Connect and returns the exercise types
      * ordered by most-recent first (deduplicated).
      * Returns empty list if the API is not available in this version.
@@ -371,127 +510,139 @@ class HealthConnectClient(private val context: Context) {
 
     /**
      * Writes skin temperature records to Health Connect.
-     * Temperature values from the watch are in centi-degrees Celsius.
-     * We use baseline to store the absolute temperature reading.
-     * Deltas are calculated from consecutive records in the list.
+     *
+     * Each record covers one local day part and uses the baseline frozen when that day was first
+     * aggregated. Re-syncing a day therefore replaces its deltas without moving the baseline.
+     * The interval spans the first and last valid reading, and every valid reading contributes
+     * exactly one delta, so the delta count always matches the measurements in the interval.
      */
     suspend fun writeSkinTemperatureRecords(
         records: List<RecordItem>,
-    ) {
-        try {
+        aggregates: List<TemperatureDayAggregate>,
+    ): Int {
+        return try {
             val hc = requireClient()
 
             if (!isSkinTemperatureAvailable()) {
                 Log.w(TAG, "Skin temperature feature not available on this device")
-                return
+                return 0
             }
 
             if (!hc.permissionController.getGrantedPermissions().contains(
                 HealthPermission.getWritePermission(SkinTemperatureRecord::class)
             )) {
                 Log.w(TAG, "Skin Temperature Write permission not granted — skipping temperature write")
-                return
+                return 0
             }
 
-            if (records.isEmpty()) return
+            if (records.isEmpty() || aggregates.isEmpty()) return 0
 
-            // Sort records by tStart to ensure proper delta calculation
-            val sortedRecords = records.sortedBy { it.tStart }
-
-            // Compute PER-GROUP baselines from records strictly before each group's time range.
-            // Use local time consistently so baseline period matching aligns with grouping.
             val zone = ZoneId.systemDefault()
-            val today = LocalDate.now(zone)
-            val yesterdayEnd = today.minusDays(1).atTime(23, 59, 59).atZone(zone).toInstant()
-
-            val baselineRecords = sortedRecords.filter { it.tStart <= yesterdayEnd.epochSecond }
-
-            if (baselineRecords.isEmpty()) {
-                Log.d(TAG, "No records available for baseline calculation, skipping temperature write")
-                return
-            }
-
-            // Group records into night/day buckets
-            val groups = groupTemperatureRecords(sortedRecords)
-            Log.d(TAG, "Temperature groups after trimming boundaries: ${groups.size}")
-
-            // Create a SkinTemperatureRecord for each group, using the period-specific baseline
-            val healthRecords = groups.flatMap { group ->
-                // Baseline = median of records strictly before this group, for the same period
-                val baseline = periodBaseline(
-                    records = baselineRecords,
-                    period = group.period,
-                    beforeEpochSecond = group.tStart,
-                    zone = zone,
-                )
-
-                if (baseline == null) {
-                    Log.w(TAG, "No baseline for ${group.period} ${group.tStart}, skipping group")
-                    emptyList()
-                } else {
-                    Log.d(TAG, "${group.period} baseline: ${"%.2f".format(baseline)}°C")
-                    createSkinTemperatureRecord(group, baseline)
+            val aggregatesByDate = aggregates.associateBy { it.date }
+            val groups = records
+                .asSequence()
+                .filter { it.value >= MIN_VALID_TEMPERATURE }
+                .distinctBy { it.tStart }
+                .sortedBy { it.tStart }
+                .groupBy { record ->
+                    val local = Instant.ofEpochSecond(record.tStart).atZone(zone)
+                    TemperatureGroupKey(
+                        date = local.toLocalDate(),
+                        period = TemperaturePeriod.fromHour(local.hour),
+                    )
                 }
+
+            val healthRecords = groups.mapNotNull { (key, readings) ->
+                val aggregate = aggregatesByDate[key.date]
+                val baseline = aggregate?.baselineCelsius(key.period)
+                if (baseline == null) {
+                    Log.w(TAG, "No frozen baseline for ${key.date} ${key.period} — skipping")
+                    return@mapNotNull null
+                }
+                val sorted = readings.sortedBy { it.tStart }
+                // The oldest raw day may be truncated by the retention cutoff. Never replace a
+                // previously written record with fewer deltas than the aggregate already holds.
+                val aggregateCount = key.period.hours.sumOf { aggregate.hourCount(it) }
+                if (sorted.size < aggregateCount) {
+                    Log.d(
+                        TAG,
+                        "Skipping truncated ${key.date} ${key.period}: " +
+                            "${sorted.size}/$aggregateCount readings",
+                    )
+                    return@mapNotNull null
+                }
+                Log.d(
+                    TAG,
+                    "Skin temperature ${key.date} ${key.period}: " +
+                        "baseline=${"%.2f".format(baseline)}°C, deltas=${sorted.size}",
+                )
+                createSkinTemperatureRecord(key, sorted, baseline)
             }
 
             if (healthRecords.isEmpty()) {
                 Log.d(TAG, "No complete temperature groups to write")
-                return
+                return 0
             }
 
             Log.d(TAG, "insertRecords: ${healthRecords.size} skin temperature records")
-            try {
+            return try {
                 hc.insertRecords(healthRecords)
                 Log.d(TAG, "Wrote ${healthRecords.size} skin temperature records to Health Connect")
+                healthRecords.size
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to insert ${healthRecords.size} skin temperature records: ${e.message}", e)
                 for ((i, record) in healthRecords.withIndex()) {
-                    Log.e(TAG, "  Record $i: startTime=${record.startTime}, endTime=${record.endTime}, baseline=${record.baseline}, deltas=${record.deltas}")
+                    Log.e(
+                        TAG,
+                        "  Record $i: startTime=${record.startTime}, " +
+                            "endTime=${record.endTime}, baseline=${record.baseline}, " +
+                            "deltas=${record.deltas.size}",
+                    )
                 }
+                0
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to write skin temperature records to Health Connect", e)
+            0
         }
     }
 
-
-    data class GroupedTempRecord(
-        val tStart: Long,
-        val tEnd: Long,
+    private data class TemperatureGroupKey(
+        val date: LocalDate,
         val period: TemperaturePeriod,
-        val readings: List<RecordItem>,
-        val stableId: String,
     )
 
     private fun createSkinTemperatureRecord(
-        group: GroupedTempRecord,
+        key: TemperatureGroupKey,
+        readings: List<RecordItem>,
         periodBaseline: Double,
-    ): List<SkinTemperatureRecord> {
-        val sorted = group.readings.sortedBy { it.tStart }
-        val startInstant = Instant.ofEpochSecond(group.tStart)
-        val endInstant = Instant.ofEpochSecond(group.tEnd)
-        val metadata = createMetadata(startInstant, endInstant, group.stableId)
+    ): SkinTemperatureRecord {
+        val startEpochSecond = readings.first().tStart
+        val lastDeltaEpochSecond = readings.last().tStart
+        // Health Connect requires the interval to end strictly after the final delta. The final
+        // reading's tEnd normally provides that, but fall back to one second past the timestamp
+        // for records with a zero-length end.
+        val endEpochSecond = maxOf(
+            readings.maxOf { maxOf(it.tEnd, it.tStart + TEMPERATURE_SAMPLE_SECONDS) },
+            lastDeltaEpochSecond + 1,
+        )
+        val startInstant = Instant.ofEpochSecond(startEpochSecond)
+        val endInstant = Instant.ofEpochSecond(endEpochSecond)
+        val metadata = createMetadata(startInstant, endInstant, temperatureRecordIdFor(key))
 
-        // Calculate deltas as deviation from period baseline (skip readings below 25 °C)
-        val deltaValues = mutableListOf<Double>()
-        val deltas = sorted
-            .filter { it.value >= MIN_VALID_TEMPERATURE }
-            .map { record ->
+        val deltas = readings.map { record ->
             val watchTempCelsius = record.value / 100.0
             val deltaCelsius = watchTempCelsius - periodBaseline
-            deltaValues.add(deltaCelsius)
-
-            // Clamp to be strictly inside the parent time range
-            val deltaEnd = Instant.ofEpochSecond(record.tStart)
+            // Health Connect requires deltas to fall strictly inside the record interval.
+            val deltaTime = Instant.ofEpochSecond(record.tStart)
                 .coerceIn(startInstant.plusNanos(1), endInstant.minusNanos(1))
-
             SkinTemperatureRecord.Delta(
-                deltaEnd,
-                TemperatureDelta.celsius(deltaCelsius)
+                deltaTime,
+                TemperatureDelta.celsius(deltaCelsius),
             )
         }
 
-        val mainRecord = SkinTemperatureRecord(
+        return SkinTemperatureRecord(
             startTime = startInstant,
             startZoneOffset = null,
             endTime = endInstant,
@@ -499,61 +650,35 @@ class HealthConnectClient(private val context: Context) {
             metadata = metadata,
             deltas = deltas,
             baseline = Temperature.celsius(periodBaseline),
-            measurementLocation = SkinTemperatureRecord.MEASUREMENT_LOCATION_WRIST
+            measurementLocation = SkinTemperatureRecord.MEASUREMENT_LOCATION_WRIST,
         )
-
-        return listOf(mainRecord)
     }
 
-    private fun groupTemperatureRecords(
-        sortedRecords: List<RecordItem>,
-    ): List<GroupedTempRecord> {
-        // Group by local time so periods align with the user's midnight.
-        // stableId uses local date + period (not UTC timestamps), so it stays
-        // consistent as long as the device timezone doesn't change.
-        val zone = ZoneId.systemDefault()
-
-        val allGroups = sortedRecords
-            .groupBy { record ->
-                val localDateTime = Instant.ofEpochSecond(record.tStart)
-                    .atZone(zone).toLocalDateTime()
-                val date = localDateTime.toLocalDate()
-                val hour = localDateTime.toLocalTime().hour
-                val period = TemperaturePeriod.fromHour(hour)
-                date to period
-            }
-            .map { (key, records) ->
-                val (date, period) = key
-                val (startInstant, endInstant) = period.getBoundaries(date, zone)
-                val stableId = stableIdForGroup(date, period)
-                GroupedTempRecord(
-                    tStart = startInstant.epochSecond,
-                    tEnd = endInstant.epochSecond,
-                    period = period,
-                    readings = records,
-                    stableId = stableId,
-                )
-            }
-            .sortedBy { it.tStart }
-
-        // Skip first group (truncated by 15-day cutoff) but keep the last group
-        // (partial interval) since the clientRecordId is stable and allows
-        // Health Connect to replace earlier partial writes with updated data.
-        return if (allGroups.size > 1) allGroups.drop(1) else emptyList()
-    }
+    private fun temperatureRecordIdFor(key: TemperatureGroupKey): String =
+        UUID.nameUUIDFromBytes("freellee_temp_${key.date}:${key.period}".toByteArray()).toString()
 
     /**
-     * Generates a stable client record ID based on the local date and period.
-     * This is used as `clientRecordId` in Metadata for Health Connect deduplication.
-     *
-     * Using local date + period (not UTC timestamps) means the stableId is
-     * deterministic as long as the device timezone doesn't change. If the
-     * timezone does change, a new stableId is generated — this creates
-     * temporary duplicate Health Connect records for the old period, which
-     * are cleaned up by the 15-day cutoff on the next sync.
+     * One-time cleanup for skin temperature records written before ids became UUIDs. Those
+     * records cannot be addressed individually, so every skin temperature record previously
+     * written by this app is removed before the retained readings are written again.
      */
-    private fun stableIdForGroup(date: LocalDate, period: TemperaturePeriod): String {
-        return "$date:$period"
+    suspend fun deleteAllOwnSkinTemperatureRecords(): Boolean {
+        return try {
+            val hc = requireClient()
+            if (!isSkinTemperatureAvailable()) return false
+            if (!hasPermission(SkinTemperatureRecord::class)) return false
+            Log.d(TAG, "Deleting legacy skin temperature records")
+            hc.deleteRecords(
+                SkinTemperatureRecord::class,
+                emptyList(),
+                listOf(context.packageName),
+            )
+            Log.d(TAG, "Deleted all skin temperature records written by this app")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to delete legacy skin temperature records", e)
+            false
+        }
     }
 
     private fun createMetadata(
