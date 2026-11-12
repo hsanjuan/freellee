@@ -76,3 +76,4 @@ dist/
 build/
 tools/*.yaml
 tools/*.bin
+pre-flash-snapshot.json
