@@ -521,7 +521,7 @@ FEATURE_BITS: dict[int, tuple[str, str]] = {
     16: ("backlight_tilt", "Backlight tilt"),
     17: ("bluetooth_chime", "Bluetooth chime"),
     18: ("backlight_colour_correction", "Backlight colour correction"),
-    19: ("step_accuracy_mode", "Step count accuracy mode"),
+    19: ("step_low_sensitivity", "Step count sensitivity (H/L)"),
     20: ("alarm_timer_backlight", "Alarm/Timer backlight"),
     21: ("bluetooth_triple_tap", "Bluetooth triple tap"),
     22: ("favorite_glance", "Favorite glance"),
@@ -529,6 +529,11 @@ FEATURE_BITS: dict[int, tuple[str, str]] = {
     24: ("night_mode_dnd", "Night mode DND"),
     26: ("backlight_disco", "Backlight disco mode"),
     27: ("screensaver", "Screen saver"),
+}
+# Older files used a misleading name for bit 19.  Accept it on input so those
+# files keep working, but always decode to the explicit key.
+FEATURE_ALIASES: dict[str, str] = {
+    "step_accuracy_mode": "step_low_sensitivity",
 }
 LIGHT_HOLD_SHIFT = 7
 LIGHT_HOLD_BITS = 0x7          # 3-bit field
@@ -731,7 +736,14 @@ def _bool_value(value: Any, field: str) -> bool:
 
 def encode_config(value: Any) -> bytes:
     mask = int(value.get("unknown_bits", 0)) & ~_KNOWN_MASK
+    features: dict[str, Any] = {}
     for key, enabled in (value.get("features") or {}).items():
+        canonical = FEATURE_ALIASES.get(key, key)
+        if canonical in features and features[canonical] != enabled:
+            raise InvalidValue(
+                f"config.features: {key!r} conflicts with {canonical!r}")
+        features[canonical] = enabled
+    for key, enabled in features.items():
         for bit, (name, _) in FEATURE_BITS.items():
             if name == key:
                 if enabled:

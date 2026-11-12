@@ -784,25 +784,34 @@ class WriteOnlySectionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _io_payload("a", 4)
 
-    def test_accuracy_mode_defaults_off(self):
+    def _default_config(self):
+        return {"features": {}, "light_hold": "hold", "autosleep_period": 5,
+                "led_rgb": {"red": 0, "green": 0, "blue": 0},
+                "led_brightness": 0, "hour_format": "toggle", "night_sleep": "off"}
 
-        # the owner confirmed the default is OFF: bit 19 stays clear unless asked
-
-        config = {"features": {}, "light_hold": "hold", "autosleep_period": 5,
-
-                  "led_rgb": {"red": 0, "green": 0, "blue": 0},
-
-                  "led_brightness": 0, "hour_format": "toggle", "night_sleep": "off"}
-
+    def test_low_sensitivity_defaults_off(self):
+        # bit 19 clear = H = high sensitivity, the factory default
+        config = self._default_config()
         mask = int.from_bytes(codecs.encode_config(config)[0:4], "big")
+        self.assertEqual(mask & 0x00080000, 0)
 
-        self.assertEqual(mask & 0x00080000, 0)              # bit 19 clear
+        config["features"]["step_low_sensitivity"] = True
+        wire = codecs.encode_config(config)
+        self.assertEqual(int.from_bytes(wire[0:4], "big") & 0x00080000, 0x00080000)
+        decoded = codecs.decode_config(wire)
+        self.assertTrue(decoded["features"]["step_low_sensitivity"])
+        self.assertNotIn("step_accuracy_mode", decoded["features"])
 
+    def test_accuracy_mode_alias_still_writes_bit_19(self):
+        config = self._default_config()
         config["features"]["step_accuracy_mode"] = True
+        wire = codecs.encode_config(config)
+        self.assertEqual(int.from_bytes(wire[0:4], "big") & 0x00080000, 0x00080000)
+        self.assertTrue(codecs.decode_config(wire)["features"]["step_low_sensitivity"])
 
-        mask = int.from_bytes(codecs.encode_config(config)[0:4], "big")
-
-        self.assertEqual(mask & 0x00080000, 0x00080000)
+        config["features"]["step_low_sensitivity"] = False
+        with self.assertRaises(codecs.InvalidValue):
+            codecs.encode_config(config)
 
 
     def test_weather_stub_is_skipped_unless_overwrite(self):

@@ -22,9 +22,10 @@ def _feature_help() -> dict[str, str]:
     for _bit, (key, name) in codecs.FEATURE_BITS.items():
         out[f"config.features.{key}"] = name
     # a few are worth explaining rather than just naming
-    out["config.features.step_accuracy_mode"] = (
-        "Step count accuracy mode - the watch face shows '(H)igh sensitivity' when "
-        "this is false and '(L)ow sensitivity' when it is true")
+    out["config.features.step_low_sensitivity"] = (
+        "Step count sensitivity - false = H (high): counts every hardware step; "
+        "true = L (low): counts about 52% of hardware steps. The watch face shows "
+        "'(H)' or '(L)' to match.")
     out["config.features.autosleep_on"] = (
         "Auto sleep - turns the screen off by itself (see autosleep_period below)")
     out["config.features.temperature"] = (
