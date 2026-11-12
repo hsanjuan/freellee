@@ -12,6 +12,7 @@ An **unofficial** Android app for [Ollee Watch](https://ollee.com) boards. No in
 
 - **Bluetooth LE pairing** with Ollee watches (board-level firmware)
 - **Syncs Steps, Heart Rate, Skin Temperature, Sleep, and Exercise Sessions** to [Android Health Connect](https://developer.android.com/health-and-fitness/health-connect)
+- **Automatic sleep detection** with main/nap classification, drag-to-adjust corrections, and confirmed-only Health Connect export
 - **Stopwatch events** synced as Exercise Sessions or Sleep Sessions to Health Connect
 - **Compatible with official firmware** — works out of the box
 - Additional tooling in repository:
@@ -21,13 +22,17 @@ An **unofficial** Android app for [Ollee Watch](https://ollee.com) boards. No in
 
 ## Screenshots
 
-| Data | Sleep | History | Events |
-|---|---|---|---|
-| <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/1.png" width="180" alt="Data dashboard"> | <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/2.png" width="180" alt="History"> | <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/3.png" width="180" alt="Activities"> | <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/4.png" width="180" alt="Counters"> |
+| Data | Sleep | History |
+|---|---|---|
+| <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/1.png" width="180" alt="Data dashboard"> | <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/2.png" width="180" alt="Sleep"> | <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/3.png" width="180" alt="History"> |
 
-| Devices (Connected) | Record Details |
-|---|---|
-| <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/5.png" width="180" alt="Devices Connected"> | <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/6.png" width="180" alt="Record Details"> |
+| Events | Devices | Settings |
+|---|---|---|
+| <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/4.png" width="180" alt="Events"> | <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/5.png" width="180" alt="Devices"> | <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/6.png" width="180" alt="Settings"> |
+
+| Record details |
+|---|
+| <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/7.png" width="180" alt="Record details"> |
 
 ## Requirements
 
