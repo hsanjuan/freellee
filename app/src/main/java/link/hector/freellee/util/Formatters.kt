@@ -31,21 +31,31 @@ fun formatSleepDuration(seconds: Long): String {
 
 /**
  * Formats a sleep session as local times (`HH:mm–HH:mm`), adding the date when the session
- * crosses midnight.
+ * crosses midnight. Set [alwaysShowDate] to include the date on same-day sessions too.
  */
 fun formatSleepRange(
     startEpochSecond: Long,
     endEpochSecond: Long,
     zone: ZoneId = ZoneId.systemDefault(),
+    alwaysShowDate: Boolean = false,
 ): String {
     val start = Instant.ofEpochSecond(startEpochSecond).atZone(zone)
     val end = Instant.ofEpochSecond(endEpochSecond).atZone(zone)
     val time = DateTimeFormatter.ofPattern("HH:mm", Locale.getDefault())
-    return if (start.toLocalDate() == end.toLocalDate()) {
-        "${time.format(start)}–${time.format(end)}"
-    } else {
-        val dateTime = DateTimeFormatter.ofPattern("MMM d HH:mm", Locale.getDefault())
-        "${dateTime.format(start)} – ${dateTime.format(end)}"
+    val startDate = start.toLocalDate()
+    val endDate = end.toLocalDate()
+    return when {
+        startDate == endDate && alwaysShowDate -> {
+            val date = DateTimeFormatter.ofPattern("MMM d", Locale.getDefault())
+            "${date.format(start)} · ${time.format(start)}–${time.format(end)}"
+        }
+
+        startDate == endDate -> "${time.format(start)}–${time.format(end)}"
+
+        else -> {
+            val dateTime = DateTimeFormatter.ofPattern("MMM d HH:mm", Locale.getDefault())
+            "${dateTime.format(start)} – ${dateTime.format(end)}"
+        }
     }
 }
 

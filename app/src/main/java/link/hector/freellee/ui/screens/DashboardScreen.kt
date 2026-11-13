@@ -600,7 +600,11 @@ private fun SleepSessionRow(summary: SleepSessionSummary) {
                 fontWeight = FontWeight.Medium,
             )
             Text(
-                text = formatSleepRange(session.startEpochSecond, session.endEpochSecond),
+                text = formatSleepRange(
+                    session.startEpochSecond,
+                    session.endEpochSecond,
+                    alwaysShowDate = true,
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = TextTertiary,
                 maxLines = 1,

@@ -26,11 +26,19 @@ private const val MAX_SPLIT_GAP_STEPS = 150
 
 /** Temperature-onset refinement of a zero-step run's start. */
 private const val ONSET_BUCKET_SECONDS = 900L
-private const val ONSET_RISE_CELSIUS = 1.5
-private const val ONSET_SUSTAIN_CELSIUS = 0.8
-private const val ONSET_MIN_SHIFT_SECONDS = 3_600L
+private const val ONSET_RISE_CELSIUS = 0.8
+private const val ONSET_SUSTAIN_CELSIUS = 0.5
+private const val ONSET_MIN_SHIFT_SECONDS = 15L * 60L
 private const val ONSET_MAX_SHIFT_SECONDS = 4 * 3_600L
-private const val ONSET_BASELINE_WINDOW_SECONDS = 5_400L
+private const val ONSET_BEFORE_SECONDS = 20L * 60L
+private const val ONSET_BASELINE_TOLERANCE_CELSIUS = 0.4
+
+/** Temperature-fall refinement of a zero-step run's end. */
+private const val WAKE_SCAN_SECONDS = 90L * 60L
+private const val WAKE_FALL_CELSIUS = 0.5
+private const val WAKE_BEFORE_SECONDS = 30L * 60L
+private const val WAKE_CONFIRM_SECONDS = 45L * 60L
+private const val WAKE_MOVEMENT_SECONDS = 30L * 60L
 private const val MIN_TEMP_COVERAGE = 0.4
 private const val MIN_DAY_RISE_CELSIUS = 0.4
 private const val MIN_SCORE = 0.45
@@ -166,7 +174,9 @@ fun detectSleepSessions(
         scoreRun(run, validTemps, zone, sampleSeconds)
     }
     val rejoined = mergeSplitSessions(candidates, intervals, zone)
-    val refined = rejoined.map { refineStartByTemperature(it, validTemps, zone) }
+    val refined = rejoined
+        .map { refineStartByTemperature(it, validTemps, zone) }
+        .map { refineEndByTemperature(it, validTemps, intervals, zone) }
     return classifyKinds(refined, zone)
 }
 
@@ -363,13 +373,64 @@ private fun refineStartByTemperature(
         ) {
             val before = medianTemperature(
                 temps,
-                candidate - ONSET_BASELINE_WINDOW_SECONDS,
+                candidate - ONSET_BEFORE_SECONDS,
                 candidate,
             )
-            if (before != null && before <= preBaseline) {
+            if (before != null && before <= preBaseline + ONSET_BASELINE_TOLERANCE_CELSIUS) {
                 return session.copy(
                     id = "det_${candidate}_$end",
                     startEpochSecond = candidate,
+                )
+            }
+        }
+        candidate += ONSET_BUCKET_SECONDS
+    }
+    return session
+}
+
+/**
+ * Trims a late zero-step end when the wearer is already awake but still lying still. Waking is
+ * visible as a sustained temperature fall, corroborated by the first small movements after it.
+ * Only applies to the night; daytime naps are too noisy for this signal.
+ */
+private fun refineEndByTemperature(
+    session: SleepSession,
+    temps: List<RecordItem>,
+    intervals: List<StepInterval>,
+    zone: ZoneId,
+): SleepSession {
+    val hour = Instant.ofEpochSecond(session.startEpochSecond).atZone(zone).hour
+    if (hour in 6..17) return session
+
+    val start = session.startEpochSecond
+    val end = session.endEpochSecond
+    if (end - start < 2 * 3_600L) return session
+
+    val scanFrom = maxOf(start + 3_600L, end - WAKE_SCAN_SECONDS)
+    val latestCandidate = end - ONSET_BUCKET_SECONDS
+    var candidate = scanFrom
+    while (candidate <= latestCandidate) {
+        // A temperature dip alone can be a mid-sleep fluctuation; require some movement as well.
+        val moved = stepsBetween(
+            intervals,
+            candidate,
+            candidate + WAKE_MOVEMENT_SECONDS,
+        ) > 0
+        if (moved) {
+            val before = medianTemperature(temps, candidate - WAKE_BEFORE_SECONDS, candidate)
+            val after = medianTemperature(temps, candidate, candidate + ONSET_BUCKET_SECONDS)
+            val later = medianTemperature(
+                temps,
+                candidate + ONSET_BUCKET_SECONDS,
+                candidate + WAKE_CONFIRM_SECONDS,
+            )
+            if (before != null && after != null && later != null &&
+                before - after >= WAKE_FALL_CELSIUS &&
+                before - later >= WAKE_FALL_CELSIUS
+            ) {
+                return session.copy(
+                    id = "det_${start}_$candidate",
+                    endEpochSecond = candidate,
                 )
             }
         }

@@ -83,7 +83,7 @@ The Data tab has a separate **Sleep** card with three summaries — average conf
 
 Detection resolution follows the step interval the watch reports. With stock hourly buckets the sessions would only be accurate to about an hour, so the tab requires a patched firmware (15-minute buckets are ideal). See [Firmware and advanced features](#firmware-and-advanced-features).
 
-Because zero steps can mean "lying still awake" as much as "asleep", a long quiet run is trimmed to the first clear **skin-temperature onset**: a sharp, sustained rise above the pre-sleep baseline. Ambiguous nights keep the step-based start rather than guessing.
+Because zero steps can mean "lying still awake" as much as "asleep", a long quiet run is trimmed to the first clear **skin-temperature onset**: a sustained rise above the pre-sleep baseline. A late end is trimmed the same way: a sustained temperature fall, corroborated by the first small movements, marks waking even when there are not yet enough steps to end the run. Ambiguous nights keep the step-based boundaries rather than guessing.
 
 Two ways to undo corrections: **Reset to detected** on a single session, or **Settings → Sleep data → Reset all sleep corrections**, which re-derives the last 28 days from raw data.
 

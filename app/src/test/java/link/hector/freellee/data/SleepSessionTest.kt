@@ -171,6 +171,86 @@ class SleepSessionTest {
     }
 
     @Test
+    fun `temperature onset trims a start less than an hour after the run begins`() {
+        val nightStart = nightDate.minusDays(1).atTime(23, 0).atZone(zone).toEpochSecond()
+        val onset = nightDate.minusDays(1).atTime(23, 30).atZone(zone).toEpochSecond()
+        val nightEnd = nightDate.atTime(7, 0).atZone(zone).toEpochSecond()
+        val temps = buildList {
+            addAll(temperatureRange(nightDate.minusDays(1), 21, 23, 29.5))
+            (0 until 30 step 4).forEach { minute ->
+                add(record(nightDate.minusDays(1), 23, minute, 29.5))
+            }
+            (30 until 60 step 4).forEach { minute ->
+                add(record(nightDate.minusDays(1), 23, minute, 33.0))
+            }
+            addAll(temperatureRange(nightDate, 0, 7, 31.5))
+        }
+        val steps = buildList {
+            add(step(nightDate.minusDays(1), 22, 300))
+            var start = nightStart
+            while (start < nightEnd) {
+                add(StepInterval(tStart = start, tEnd = start + 3600, steps = 0))
+                start += 3600
+            }
+            add(step(nightDate, 7, 300))
+        }
+
+        val sessions = detectSleepSessions(
+            temperatureRecords = temps,
+            stepIntervals = steps,
+            nowEpochSecond = now(),
+            zone = zone,
+        )
+
+        assertEquals(1, sessions.size)
+        assertEquals(onset, sessions.single().startEpochSecond)
+        assertEquals(nightEnd, sessions.single().endEpochSecond)
+    }
+
+    @Test
+    fun `temperature fall trims a late step-based end`() {
+        val nightStart = nightDate.minusDays(1).atTime(22, 0).atZone(zone).toEpochSecond()
+        val wake = nightDate.atTime(6, 45).atZone(zone).toEpochSecond()
+        val temps = buildList {
+            addAll(temperatureRange(nightDate.minusDays(1), 20, 22, 29.5))
+            addAll(temperatureRange(nightDate.minusDays(1), 22, 24, 32.0))
+            addAll(temperatureRange(nightDate, 0, 6, 32.0))
+            (0 until 45 step 4).forEach { minute ->
+                add(record(nightDate, 6, minute, 32.0))
+            }
+            (45 until 60 step 4).forEach { minute ->
+                add(record(nightDate, 6, minute, 31.0))
+            }
+            addAll(temperatureRange(nightDate, 7, 8, 30.5))
+        }
+        val steps = buildList {
+            add(step(nightDate.minusDays(1), 21, 300))
+            var start = nightStart
+            while (start < nightDate.atTime(6, 45).atZone(zone).toEpochSecond()) {
+                add(StepInterval(tStart = start, tEnd = start + 900, steps = 0))
+                start += 900
+            }
+            // Few steps while waking up: not enough to close the zero-step run by themselves.
+            add(StepInterval(tStart = start, tEnd = start + 900, steps = 5))
+            start += 900
+            add(StepInterval(tStart = start, tEnd = start + 900, steps = 0))
+            start += 900
+            add(StepInterval(tStart = start, tEnd = start + 900, steps = 300))
+        }
+
+        val sessions = detectSleepSessions(
+            temperatureRecords = temps,
+            stepIntervals = steps,
+            nowEpochSecond = now(),
+            zone = zone,
+        )
+
+        assertEquals(1, sessions.size)
+        assertEquals(nightStart, sessions.single().startEpochSecond)
+        assertEquals(wake, sessions.single().endEpochSecond)
+    }
+
+    @Test
     fun `temperature onset keeps the start when the night is already warm`() {
         val nightStart = nightDate.minusDays(1).atTime(22, 0).atZone(zone).toEpochSecond()
         val nightEnd = nightDate.atTime(7, 0).atZone(zone).toEpochSecond()
