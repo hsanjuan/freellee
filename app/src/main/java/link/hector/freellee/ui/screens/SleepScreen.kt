@@ -246,11 +246,7 @@ fun SleepScreen(
                 }
 
                 item {
-                    Text(
-                        "Sessions",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = TextSecondary,
-                    )
+                    SleepSectionHeading("Sessions")
                 }
 
                 if (sessions.isEmpty()) {
@@ -288,6 +284,10 @@ fun SleepScreen(
                             },
                         )
                     }
+                }
+
+                item {
+                    SleepSectionHeading("Sleep rhythm")
                 }
 
                 item {
@@ -929,6 +929,16 @@ private fun RhythmStat(
     }
 }
 
+/** Section heading shared by the session list and the rhythm summary. */
+@Composable
+private fun SleepSectionHeading(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.titleMedium,
+        color = TextSecondary,
+    )
+}
+
 @Composable
 private fun SleepRhythmCard(
     selectedDate: LocalDate,
@@ -972,11 +982,6 @@ private fun SleepRhythmCard(
         colors = CardDefaults.cardColors(containerColor = CardBackground),
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                "Sleep rhythm",
-                style = MaterialTheme.typography.labelLarge,
-                color = TextSecondary,
-            )
             Text(
                 "Confirmed sessions · last 7 sleep days",
                 style = MaterialTheme.typography.bodySmall,
