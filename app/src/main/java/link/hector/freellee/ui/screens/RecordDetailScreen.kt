@@ -9,11 +9,13 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenuItem
@@ -43,6 +45,8 @@ import java.time.ZoneId
 import java.time.temporal.TemporalAdjusters
 import java.time.temporal.WeekFields
 import java.util.Locale
+import link.hector.freellee.data.MIN_VALID_TEMPERATURE
+import link.hector.freellee.ui.theme.AccentAmber
 import link.hector.freellee.ui.theme.AccentGreen
 import link.hector.freellee.ui.theme.CardBackground
 import link.hector.freellee.ui.theme.TextSecondary
@@ -234,6 +238,7 @@ private fun RecordRow(title: String, entry: HistoryEntry) {
     // Instantaneous records (heart rate, counter) carry tEnd == 0, so only show an
     // end time when the record actually spans a range.
     val hasRange = entry.watchTimestampEnd > entry.watchTimestampStart
+    val invalidTemperature = title == "Temperature" && entry.value < MIN_VALID_TEMPERATURE
     val syncedAt = if (entry.syncTimestamp > 0) {
         formatTimestamp(Instant.ofEpochSecond(entry.syncTimestamp))
     } else {
@@ -250,15 +255,35 @@ private fun RecordRow(title: String, entry: HistoryEntry) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    entry.formatValue(title),
-                    style = MaterialTheme.typography.headlineSmall,
-                    color = AccentGreen,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (invalidTemperature) {
+                        Icon(
+                            Icons.Default.Warning,
+                            contentDescription = "Invalid reading",
+                            tint = AccentAmber,
+                            modifier = Modifier
+                                .size(20.dp)
+                                .padding(end = 6.dp),
+                        )
+                    }
+                    Text(
+                        entry.formatValue(title),
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = if (invalidTemperature) AccentAmber else AccentGreen,
+                    )
+                }
                 Text(
                     formatTimestamp(Instant.ofEpochSecond(entry.watchTimestampStart)),
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary,
+                )
+            }
+            if (invalidTemperature) {
+                Text(
+                    "Invalid reading — below ${"%.1f".format(MIN_VALID_TEMPERATURE / 100.0)}°C",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AccentAmber,
+                    modifier = Modifier.padding(top = 2.dp),
                 )
             }
             if (hasRange) {
