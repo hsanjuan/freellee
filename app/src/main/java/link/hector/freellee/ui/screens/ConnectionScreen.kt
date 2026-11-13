@@ -7,8 +7,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -53,6 +55,9 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import link.hector.freellee.ble.ConnectionState
 import link.hector.freellee.data.PairedDevice
+import link.hector.freellee.data.batteryDailySeries
+import link.hector.freellee.data.batteryPercentage
+import link.hector.freellee.ui.charts.BatteryLineChart
 import link.hector.freellee.ui.components.FreelleeOutlinedButton
 import link.hector.freellee.ui.theme.AccentGreen
 import link.hector.freellee.ui.theme.CardBackground
@@ -65,6 +70,8 @@ import link.hector.freellee.ui.theme.TextSecondary
 import link.hector.freellee.ui.theme.TextTertiary
 import link.hector.freellee.viewmodel.DeviceUiState
 import link.hector.freellee.viewmodel.DeviceViewModel
+import java.time.LocalDate
+import java.time.ZoneId
 
 @Composable
 fun ConnectionScreen(
@@ -417,14 +424,23 @@ private fun PairedDeviceCard(
                     Icon(Icons.Default.Delete, contentDescription = "Remove", tint = StatusError)
                 }
             }
+            if (device.batteryHistory.isNotEmpty()) {
+                val today = LocalDate.now()
+                val points = remember(device.batteryHistory, today) {
+                    batteryDailySeries(
+                        samples = device.batteryHistory,
+                        endDate = today,
+                        zone = ZoneId.systemDefault(),
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                BatteryLineChart(
+                    points = points,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         }
     }
-}
-
-/** Convert voltage (mV) to an approximate battery percentage for a CR2016 coin cell.
- *  3000 mV = 100%, 2600 mV = 0%, linear interpolation. */
-private fun batteryPercentage(voltageMv: Int): Int {
-    return maxOf(0, minOf(100, ((voltageMv - 2600) * 100) / 400))
 }
 
 /** Select a battery icon based on percentage. */

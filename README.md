@@ -13,6 +13,7 @@ An **unofficial** Android app for [Ollee Watch](https://ollee.com) boards. No in
 - **Bluetooth LE pairing** with Ollee watches (board-level firmware)
 - **Syncs Steps, Heart Rate, Skin Temperature, Sleep, and Exercise Sessions** to [Android Health Connect](https://developer.android.com/health-and-fitness/health-connect)
 - **Automatic sleep detection** with main/nap classification, drag-to-adjust corrections, and confirmed-only Health Connect export
+- **Battery history** for paired watches, with a compact 60-day trend in the Devices tab
 - **Stopwatch events** synced as Exercise Sessions or Sleep Sessions to Health Connect
 - **Compatible with official firmware** — works out of the box
 - Additional tooling in repository:

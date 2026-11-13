@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import org.json.JSONArray
 import org.json.JSONObject
+import java.time.Instant
 import java.time.LocalDate
 
 private const val TAG = "DeviceStore"
@@ -42,6 +43,7 @@ data class PairedDevice(
     val isActive: Boolean,
     val lastSyncedStepCount: Long?,
     val voltageMv: Int? = null,
+    val batteryHistory: List<BatterySample> = emptyList(),
 )
 
 /**
@@ -73,6 +75,7 @@ class DeviceStore(private val context: Context) {
         private val HC_SLEEP_WRITE_EPOCH_KEY = longPreferencesKey("hc_sleep_write_epoch")
         private val HC_SLEEP_WRITE_COUNT_KEY = intPreferencesKey("hc_sleep_write_count")
         private const val VOLTAGE_PREFIX = "voltage_"
+        private const val BATTERY_HISTORY_PREFIX = "battery_history_"
     }
 
     /** Get the currently active device's MAC address. */
@@ -106,6 +109,15 @@ class DeviceStore(private val context: Context) {
             }
             if (voltageMv != null) {
                 prefs[stringPreferencesKey(VOLTAGE_PREFIX + macAddress)] = voltageMv.toString()
+                val historyKey = prefKey(BATTERY_HISTORY_PREFIX, macAddress)
+                val history = parseBatteryHistory(prefs[historyKey])
+                val updated = appendBatterySample(
+                    history = history,
+                    sample = BatterySample(Instant.now().epochSecond, voltageMv),
+                )
+                if (updated != history) {
+                    prefs[historyKey] = batteryHistoryToJson(updated)
+                }
             } else {
                 prefs.remove(stringPreferencesKey(VOLTAGE_PREFIX + macAddress))
             }
@@ -124,6 +136,7 @@ class DeviceStore(private val context: Context) {
             prefs.remove(prefKey("firmware", macAddress))
             prefs.remove(prefLongKey("steps", macAddress))
             prefs.remove(stringPreferencesKey(VOLTAGE_PREFIX + macAddress))
+            prefs.remove(prefKey(BATTERY_HISTORY_PREFIX, macAddress))
         }
         return wasActive
     }
@@ -148,6 +161,9 @@ class DeviceStore(private val context: Context) {
                     } catch (_: Exception) {
                         null
                     },
+                    batteryHistory = parseBatteryHistory(
+                        prefs[prefKey(BATTERY_HISTORY_PREFIX, activeMac)],
+                    ),
                 )
             )
         }
@@ -273,6 +289,20 @@ class DeviceStore(private val context: Context) {
             )
         }
     }
+
+    private fun batteryHistoryToJson(items: List<BatterySample>): String =
+        listToJson(items) { sample, obj ->
+            obj.put("t", sample.epochSecond)
+            obj.put("mv", sample.voltageMv)
+        }
+
+    private fun parseBatteryHistory(json: String?): List<BatterySample> =
+        parseJsonArray(json ?: return emptyList()) { obj ->
+            BatterySample(
+                epochSecond = obj.getLong("t"),
+                voltageMv = obj.getInt("mv"),
+            )
+        }
 
     private fun sleepSessionsToJson(items: List<SleepSession>): String =
         listToJson(items) { session, obj ->
