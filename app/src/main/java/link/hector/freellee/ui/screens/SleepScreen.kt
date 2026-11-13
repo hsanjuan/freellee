@@ -785,11 +785,47 @@ private fun SleepSessionCard(
                         color = TextPrimary,
                         fontWeight = FontWeight.SemiBold,
                     )
-                    Text(
-                        formatSleepRange(session.startEpochSecond, session.endEpochSecond, zone),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextTertiary,
-                    )
+                    if (isEdited) {
+                        Text(
+                            "Confirmed ${formatSleepRange(
+                                session.startEpochSecond,
+                                session.endEpochSecond,
+                                zone,
+                            )}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (session.hasDetectedOrigin) {
+                            val confidence = session.detectedConfidence
+                                ?.let { " · ${Math.round(it * 100)}%" }
+                                .orEmpty()
+                            Text(
+                                "Detected ${formatSleepRange(
+                                    session.detectedStartEpochSecond!!,
+                                    session.detectedEndEpochSecond!!,
+                                    zone,
+                                )}$confidence",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextTertiary,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    } else {
+                        Text(
+                            "Detected ${formatSleepRange(
+                                session.startEpochSecond,
+                                session.endEpochSecond,
+                                zone,
+                            )} · ${Math.round(session.confidence * 100)}%",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextTertiary,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
                 Column(horizontalAlignment = Alignment.End) {
                     Text(
@@ -802,7 +838,7 @@ private fun SleepSessionCard(
                         text = when {
                             inProgress -> "In progress"
                             isEdited -> "Confirmed"
-                            else -> "Detected ${Math.round(session.confidence * 100)}%"
+                            else -> "Detected"
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = when {

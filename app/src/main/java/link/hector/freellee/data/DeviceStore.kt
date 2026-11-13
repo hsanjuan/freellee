@@ -283,6 +283,9 @@ class DeviceStore(private val context: Context) {
             obj.put("confidence", session.confidence)
             obj.put("source", session.source.name)
             obj.put("dismissed", session.dismissed)
+            obj.put("detectedStart", session.detectedStartEpochSecond ?: JSONObject.NULL)
+            obj.put("detectedEnd", session.detectedEndEpochSecond ?: JSONObject.NULL)
+            obj.put("detectedConfidence", session.detectedConfidence ?: JSONObject.NULL)
         }
 
     private fun parseSleepSessions(json: String?): List<SleepSession> {
@@ -300,6 +303,27 @@ class DeviceStore(private val context: Context) {
                     .firstOrNull { it.name == obj.optString("source") }
                     ?: SleepSessionSource.DETECTED,
                 dismissed = obj.optBoolean("dismissed", false),
+                detectedStartEpochSecond = if (
+                    obj.has("detectedStart") && !obj.isNull("detectedStart")
+                ) {
+                    obj.getLong("detectedStart")
+                } else {
+                    null
+                },
+                detectedEndEpochSecond = if (
+                    obj.has("detectedEnd") && !obj.isNull("detectedEnd")
+                ) {
+                    obj.getLong("detectedEnd")
+                } else {
+                    null
+                },
+                detectedConfidence = if (
+                    obj.has("detectedConfidence") && !obj.isNull("detectedConfidence")
+                ) {
+                    obj.optDouble("detectedConfidence")
+                } else {
+                    null
+                },
             )
         }
     }

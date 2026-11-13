@@ -41,6 +41,7 @@ import link.hector.freellee.data.SleepSessionSource
 import link.hector.freellee.data.TemperatureDayAggregate
 import link.hector.freellee.data.buildTemperatureDayAggregates
 import link.hector.freellee.data.combineSleepSessions
+import link.hector.freellee.data.confirmDetected
 import link.hector.freellee.data.detectSleepSessions
 import link.hector.freellee.data.inferSleepKind
 import link.hector.freellee.data.inferStepIntervalSeconds
@@ -49,6 +50,7 @@ import link.hector.freellee.data.inferTemperatureSampleSeconds
 import link.hector.freellee.data.isAdvancedEnabled
 import link.hector.freellee.data.mergeSleepSessions
 import link.hector.freellee.data.sleepDayKey
+import link.hector.freellee.data.withAdjustedRange
 import link.hector.freellee.ui.charts.DashboardChartData
 import link.hector.freellee.ui.charts.buildDashboardChartData
 import kotlinx.coroutines.flow.collectLatest
@@ -873,10 +875,7 @@ class OlleeViewModel(
         mutateSleepSessions { sessions ->
             sessions.map { session ->
                 if (session.id == id && !session.dismissed) {
-                    session.copy(
-                        source = SleepSessionSource.USER,
-                        confidence = 1.0,
-                    )
+                    session.confirmDetected()
                 } else {
                     session
                 }
@@ -891,14 +890,7 @@ class OlleeViewModel(
                 val target = sessions.firstOrNull { it.id == id }
                     ?: return@mutateSleepSessions sessions
                 // Keep the id stable so the Health Connect record is updated, not duplicated.
-                val adjusted = target.copy(
-                    startEpochSecond = startEpochSecond,
-                    endEpochSecond = endEpochSecond,
-                    kind = inferSleepKind(startEpochSecond, endEpochSecond),
-                    confidence = 1.0,
-                    source = SleepSessionSource.USER,
-                    dismissed = false,
-                )
+                val adjusted = target.withAdjustedRange(startEpochSecond, endEpochSecond)
                 (sessions.filterNot { it.id == id } + adjusted).filterNot {
                     it.source == SleepSessionSource.DETECTED && !it.dismissed && it.overlaps(adjusted)
                 }
@@ -989,11 +981,13 @@ class OlleeViewModel(
         mutateSleepSessions { sessions ->
             sessions.filterNot {
                 it.id == session.id || it.id == "dismissed_${session.id}"
-            } + session.copy(
-                dismissed = false,
-                source = SleepSessionSource.USER,
-                confidence = 1.0,
-            )
+            } + session.copy(dismissed = false).let { restored ->
+                if (restored.source == SleepSessionSource.DETECTED) {
+                    restored.confirmDetected()
+                } else {
+                    restored.copy(source = SleepSessionSource.USER, confidence = 1.0)
+                }
+            }
         }
     }
 

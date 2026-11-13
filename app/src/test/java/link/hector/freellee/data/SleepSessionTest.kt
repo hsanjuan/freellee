@@ -423,6 +423,54 @@ class SleepSessionTest {
     }
 
     @Test
+    fun `confirming a detection keeps its original times and confidence`() {
+        val detected = SleepSession(
+            id = "det",
+            startEpochSecond = nightDate.atTime(0, 30).atZone(zone).toEpochSecond(),
+            endEpochSecond = nightDate.atTime(6, 45).atZone(zone).toEpochSecond(),
+            kind = SleepSessionKind.MAIN,
+            confidence = 0.72,
+            source = SleepSessionSource.DETECTED,
+        )
+
+        val confirmed = detected.confirmDetected()
+
+        assertEquals(SleepSessionSource.USER, confirmed.source)
+        assertEquals(1.0, confirmed.confidence, 0.0)
+        assertEquals(detected.startEpochSecond, confirmed.detectedStartEpochSecond)
+        assertEquals(detected.endEpochSecond, confirmed.detectedEndEpochSecond)
+        assertEquals(0.72, confirmed.detectedConfidence!!, 0.001)
+        assertTrue(confirmed.hasDetectedOrigin)
+    }
+
+    @Test
+    fun `adjusting a detection keeps its original times and confidence`() {
+        val detected = SleepSession(
+            id = "det",
+            startEpochSecond = nightDate.atTime(0, 30).atZone(zone).toEpochSecond(),
+            endEpochSecond = nightDate.atTime(6, 45).atZone(zone).toEpochSecond(),
+            kind = SleepSessionKind.MAIN,
+            confidence = 0.72,
+            source = SleepSessionSource.DETECTED,
+        )
+        val adjustedStart = detected.startEpochSecond + 30 * 60
+        val adjustedEnd = detected.endEpochSecond - 15 * 60
+
+        val adjusted = detected.withAdjustedRange(adjustedStart, adjustedEnd, zone)
+        val readjusted = adjusted.withAdjustedRange(adjustedStart + 900, adjustedEnd, zone)
+
+        assertEquals(SleepSessionSource.USER, adjusted.source)
+        assertEquals(adjustedStart, adjusted.startEpochSecond)
+        assertEquals(adjustedEnd, adjusted.endEpochSecond)
+        assertEquals(detected.startEpochSecond, adjusted.detectedStartEpochSecond)
+        assertEquals(detected.endEpochSecond, adjusted.detectedEndEpochSecond)
+        assertEquals(0.72, adjusted.detectedConfidence!!, 0.001)
+        // A second adjustment keeps the snapshot from the original detection.
+        assertEquals(detected.startEpochSecond, readjusted.detectedStartEpochSecond)
+        assertEquals(0.72, readjusted.detectedConfidence!!, 0.001)
+    }
+
+    @Test
     fun `manual merge produces one user session spanning both`() {
         val first = SleepSession(
             id = "a",
@@ -448,6 +496,9 @@ class SleepSessionTest {
         assertEquals(SleepSessionKind.MAIN, merged.kind)
         assertEquals(SleepSessionSource.USER, merged.source)
         assertEquals(1.0, merged.confidence, 0.0)
+        assertEquals(first.startEpochSecond, merged.detectedStartEpochSecond)
+        assertEquals(second.endEpochSecond, merged.detectedEndEpochSecond)
+        assertEquals(0.8, merged.detectedConfidence!!, 0.001)
     }
 
     @Test
@@ -551,6 +602,41 @@ class SleepSessionTest {
         assertNotNull(merged.firstOrNull { it.id == "det-new" })
         assertNull(merged.firstOrNull { it.id == "det-night" })
         assertNull(merged.firstOrNull { it.id == "det-nap" })
+    }
+
+    @Test
+    fun `an older confirmation backfills the matching detection snapshot`() {
+        val start = nightDate.atTime(0, 30).atZone(zone).toEpochSecond()
+        val end = nightDate.atTime(6, 45).atZone(zone).toEpochSecond()
+        val user = SleepSession(
+            id = "det_${start}_$end",
+            startEpochSecond = start,
+            endEpochSecond = end,
+            kind = SleepSessionKind.MAIN,
+            confidence = 1.0,
+            source = SleepSessionSource.USER,
+        )
+        val detection = SleepSession(
+            id = "det_detected",
+            startEpochSecond = nightDate.atTime(0, 0).atZone(zone).toEpochSecond(),
+            endEpochSecond = nightDate.atTime(7, 0).atZone(zone).toEpochSecond(),
+            kind = SleepSessionKind.MAIN,
+            confidence = 0.8,
+            source = SleepSessionSource.DETECTED,
+        )
+
+        val merged = mergeSleepSessions(
+            existing = listOf(user),
+            detected = listOf(detection),
+            nowEpochSecond = now(),
+            detectionDays = 2,
+        )
+
+        val confirmed = merged.single()
+        assertEquals(user.id, confirmed.id)
+        assertEquals(detection.startEpochSecond, confirmed.detectedStartEpochSecond)
+        assertEquals(detection.endEpochSecond, confirmed.detectedEndEpochSecond)
+        assertEquals(0.8, confirmed.detectedConfidence!!, 0.001)
     }
 
     @Test

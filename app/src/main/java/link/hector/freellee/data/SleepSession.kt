@@ -62,9 +62,17 @@ data class SleepSession(
     val confidence: Double,
     val source: SleepSessionSource,
     val dismissed: Boolean = false,
+    /** Detection boundaries retained after the user confirms or adjusts the session. */
+    val detectedStartEpochSecond: Long? = null,
+    val detectedEndEpochSecond: Long? = null,
+    val detectedConfidence: Double? = null,
 ) {
     val durationSeconds: Long get() = (endEpochSecond - startEpochSecond).coerceAtLeast(0)
     val durationHours: Double get() = durationSeconds / 3600.0
+
+    /** True when this user-owned session still knows the detection it came from. */
+    val hasDetectedOrigin: Boolean
+        get() = detectedStartEpochSecond != null && detectedEndEpochSecond != null
 
     /** True when the two sessions share any time at all. */
     fun touches(other: SleepSession): Boolean =
@@ -82,6 +90,51 @@ data class SleepSession(
 
 /** How far back the dashboard's "recent confirmed sleep" list reaches. */
 private const val RECENT_CONFIRMED_SECONDS = 48L * 3_600L
+
+/** Ids of sessions produced by the detector. User actions keep this prefix. */
+private const val DETECTED_ID_PREFIX = "det_"
+
+/**
+ * Marks a detected session as confirmed while keeping the detector's original boundaries and
+ * confidence, so the Sleep tab can still show what was detected.
+ */
+fun SleepSession.confirmDetected(): SleepSession {
+    if (source == SleepSessionSource.USER) return copy(confidence = 1.0)
+    return copy(
+        source = SleepSessionSource.USER,
+        confidence = 1.0,
+        detectedStartEpochSecond = detectedStartEpochSecond ?: startEpochSecond,
+        detectedEndEpochSecond = detectedEndEpochSecond ?: endEpochSecond,
+        detectedConfidence = detectedConfidence ?: confidence,
+    )
+}
+
+/**
+ * Applies a user-corrected range while retaining the detection it came from. Adjusting an
+ * already-confirmed session keeps its earlier detection snapshot.
+ */
+fun SleepSession.withAdjustedRange(
+    startEpochSecond: Long,
+    endEpochSecond: Long,
+    zone: ZoneId = ZoneId.systemDefault(),
+): SleepSession {
+    val isDetected = source == SleepSessionSource.DETECTED
+    val originalStart = this.startEpochSecond
+    val originalEnd = this.endEpochSecond
+    return copy(
+        startEpochSecond = startEpochSecond,
+        endEpochSecond = endEpochSecond,
+        kind = inferSleepKind(startEpochSecond, endEpochSecond, zone),
+        confidence = 1.0,
+        source = SleepSessionSource.USER,
+        dismissed = false,
+        detectedStartEpochSecond = detectedStartEpochSecond
+            ?: originalStart.takeIf { isDetected },
+        detectedEndEpochSecond = detectedEndEpochSecond
+            ?: originalEnd.takeIf { isDetected },
+        detectedConfidence = detectedConfidence ?: confidence.takeIf { isDetected },
+    )
+}
 
 /**
  * A session that ended within roughly two step intervals of now is still running: the next
@@ -288,7 +341,7 @@ private fun scoreRun(
     if (!isNight && duration < 90 * 60 && rise < 0.8) return null
 
     return SleepSession(
-        id = "det_${run.start}_${run.end}",
+        id = "$DETECTED_ID_PREFIX${run.start}_${run.end}",
         startEpochSecond = run.start,
         endEpochSecond = run.end,
         kind = if (durationHours >= 3.0 && isNight) {
@@ -323,7 +376,7 @@ private fun mergeSplitSessions(
             MAX_SPLIT_GAP_STEPS
         if (gap in 0..MAX_SPLIT_GAP_SECONDS && sameDay && quietGap) {
             current = current.copy(
-                id = "det_${current.startEpochSecond}_${next.endEpochSecond}",
+                id = "$DETECTED_ID_PREFIX${current.startEpochSecond}_${next.endEpochSecond}",
                 endEpochSecond = next.endEpochSecond,
                 confidence = maxOf(current.confidence, next.confidence),
             )
@@ -378,7 +431,7 @@ private fun refineStartByTemperature(
             )
             if (before != null && before <= preBaseline + ONSET_BASELINE_TOLERANCE_CELSIUS) {
                 return session.copy(
-                    id = "det_${candidate}_$end",
+                    id = "$DETECTED_ID_PREFIX${candidate}_$end",
                     startEpochSecond = candidate,
                 )
             }
@@ -429,7 +482,7 @@ private fun refineEndByTemperature(
                 before - later >= WAKE_FALL_CELSIUS
             ) {
                 return session.copy(
-                    id = "det_${start}_$candidate",
+                    id = "$DETECTED_ID_PREFIX${start}_$candidate",
                     endEpochSecond = candidate,
                 )
             }
@@ -520,6 +573,22 @@ fun combineSleepSessions(
 ): SleepSession {
     val start = min(first.startEpochSecond, second.startEpochSecond)
     val end = max(first.endEpochSecond, second.endEpochSecond)
+    val detectedStarts = listOfNotNull(
+        first.detectedStartEpochSecond ?: first.startEpochSecond.takeIf {
+            first.source == SleepSessionSource.DETECTED
+        },
+        second.detectedStartEpochSecond ?: second.startEpochSecond.takeIf {
+            second.source == SleepSessionSource.DETECTED
+        },
+    )
+    val detectedEnds = listOfNotNull(
+        first.detectedEndEpochSecond ?: first.endEpochSecond.takeIf {
+            first.source == SleepSessionSource.DETECTED
+        },
+        second.detectedEndEpochSecond ?: second.endEpochSecond.takeIf {
+            second.source == SleepSessionSource.DETECTED
+        },
+    )
     return SleepSession(
         id = "user_${start}_$end",
         startEpochSecond = start,
@@ -527,8 +596,15 @@ fun combineSleepSessions(
         kind = inferSleepKind(start, end, zone),
         confidence = 1.0,
         source = SleepSessionSource.USER,
+        detectedStartEpochSecond = detectedStarts.minOrNull(),
+        detectedEndEpochSecond = detectedEnds.maxOrNull(),
+        detectedConfidence = listOfNotNull(first.originConfidence(), second.originConfidence())
+            .maxOrNull(),
     )
 }
+
+private fun SleepSession.originConfidence(): Double? =
+    detectedConfidence ?: confidence.takeIf { source == SleepSessionSource.DETECTED }
 
 /**
  * Merges fresh detections into the stored sessions. User sessions win, and dismissed sessions
@@ -551,7 +627,9 @@ fun mergeSleepSessions(
     val recent = existing.filter {
         it.endEpochSecond >= detectionCutoff && it.startEpochSecond >= retentionCutoff
     }
-    val user = recent.filter { it.source == SleepSessionSource.USER && !it.dismissed }
+    val user = recent
+        .filter { it.source == SleepSessionSource.USER && !it.dismissed }
+        .map { backfillDetectedOrigin(it, detected) }
     val dismissed = recent.filter { it.dismissed }
 
     val result = mutableListOf<SleepSession>()
@@ -570,6 +648,31 @@ fun mergeSleepSessions(
         .distinctBy { it.id }
         .sortedBy { it.startEpochSecond }
 }
+
+/**
+ * Older confirmations predate the stored detection snapshot. When the session still carries a
+ * detector id, attach the matching current detection once so the Sleep tab can show what the
+ * detector found alongside the confirmed times.
+ */
+private fun backfillDetectedOrigin(
+    session: SleepSession,
+    detected: List<SleepSession>,
+): SleepSession {
+    if (session.hasDetectedOrigin || !session.id.startsWith(DETECTED_ID_PREFIX)) return session
+    val match = detected
+        .filter { it.overlaps(session) }
+        .maxByOrNull { it.overlapSeconds(session) }
+        ?: return session
+    return session.copy(
+        detectedStartEpochSecond = match.startEpochSecond,
+        detectedEndEpochSecond = match.endEpochSecond,
+        detectedConfidence = match.confidence,
+    )
+}
+
+private fun SleepSession.overlapSeconds(other: SleepSession): Long =
+    (min(endEpochSecond, other.endEpochSecond) - max(startEpochSecond, other.startEpochSecond))
+        .coerceAtLeast(0)
 
 private fun medianTemperature(temps: List<RecordItem>, from: Long, to: Long): Double? {
     if (to <= from) return null
