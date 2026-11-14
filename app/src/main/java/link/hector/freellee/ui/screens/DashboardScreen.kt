@@ -1,7 +1,5 @@
 package link.hector.freellee.ui.screens
 
-import android.bluetooth.BluetoothManager
-import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -50,7 +48,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -65,7 +62,6 @@ import link.hector.freellee.ui.charts.StepsChartData
 import link.hector.freellee.ui.charts.TemperatureChartData
 import link.hector.freellee.ui.charts.TemperatureLineChart
 import link.hector.freellee.ui.charts.TodayStepsChart
-import link.hector.freellee.ui.components.WatchStatusIndicator
 import link.hector.freellee.ui.theme.AccentAmber
 import link.hector.freellee.ui.theme.AccentBlue
 import link.hector.freellee.ui.theme.AccentGreen
@@ -100,8 +96,6 @@ fun DashboardScreen(
     val uiState by viewModel.uiState.collectAsState()
     val chartData by viewModel.chartData.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
-    val bleState by viewModel.connectionState.collectAsState()
-    val hasPairedDevice by viewModel.hasPairedDevice.collectAsState()
     val advancedEnabled by viewModel.advancedEnabled.collectAsState()
 
     LaunchedEffect(uiState) {
@@ -163,25 +157,13 @@ fun DashboardScreen(
                 .fillMaxSize()
                 .padding(padding),
         ) {
-            val context = LocalContext.current
-            val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-            val bluetoothEnabled = btManager?.adapter?.isEnabled == true
-
             val dashboardState = uiState as? DashboardUiState.Ready ?: viewModel.lastReadyState
 
             UnifiedDashboard(
                 state = dashboardState,
                 chartData = chartData,
                 sleepEnabled = advancedEnabled,
-            ) {
-                WatchStatusIndicator(
-                    uiState = uiState,
-                    bleState = bleState,
-                    hasPairedDevice = hasPairedDevice,
-                    bluetoothEnabled = bluetoothEnabled,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                )
-            }
+            )
         }
     }
 }
@@ -191,7 +173,6 @@ private fun UnifiedDashboard(
     state: DashboardUiState.Ready?,
     chartData: DashboardChartData,
     sleepEnabled: Boolean,
-    statusIndicator: @Composable () -> Unit,
 ) {
     val dailySteps = state?.steps ?: 0
     val heartRateRecords = state?.heartRateRecords ?: emptyList()
@@ -212,10 +193,6 @@ private fun UnifiedDashboard(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        item {
-            statusIndicator()
-        }
-
         item {
             TemperatureSection(
                 lastRecord = lastTemperature,

@@ -1,7 +1,5 @@
 package link.hector.freellee.ui.screens
 
-import android.bluetooth.BluetoothManager
-import android.content.Context
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -79,7 +77,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -103,7 +100,6 @@ import link.hector.freellee.data.medianOrNull
 import link.hector.freellee.data.sleepDayEnd
 import link.hector.freellee.data.sleepDayKey
 import link.hector.freellee.data.sleepDayStart
-import link.hector.freellee.ui.components.WatchStatusIndicator
 import link.hector.freellee.ui.theme.AccentAmber
 import link.hector.freellee.ui.theme.AccentGreen
 import link.hector.freellee.ui.theme.AccentPurple
@@ -140,12 +136,6 @@ fun SleepScreen(
     val isRefreshing = uiState is DashboardUiState.Connecting ||
         uiState is DashboardUiState.Connected ||
         uiState is DashboardUiState.Syncing
-
-    val bleState by viewModel.connectionState.collectAsState()
-    val hasPairedDevice by viewModel.hasPairedDevice.collectAsState()
-    val context = LocalContext.current
-    val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-    val bluetoothEnabled = btManager?.adapter?.isEnabled == true
 
     val zone = remember { ZoneId.systemDefault() }
     val sampling by viewModel.samplingProfile.collectAsState()
@@ -215,15 +205,6 @@ fun SleepScreen(
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                item {
-                    WatchStatusIndicator(
-                        uiState = uiState,
-                        bleState = bleState,
-                        hasPairedDevice = hasPairedDevice,
-                        bluetoothEnabled = bluetoothEnabled,
-                    )
-                }
-
                 item {
                     SleepDayHeader(
                         date = selectedDate,

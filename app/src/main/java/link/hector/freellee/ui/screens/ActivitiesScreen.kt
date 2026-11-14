@@ -56,7 +56,6 @@ import androidx.health.connect.client.records.ExerciseSessionRecord
 import link.hector.freellee.data.DeviceStore
 import link.hector.freellee.data.HealthConnectClient
 import link.hector.freellee.ui.components.RecordCard
-import link.hector.freellee.ui.components.WatchStatusIndicator
 import link.hector.freellee.ui.theme.AccentGreen
 import link.hector.freellee.ui.theme.AccentPurple
 import link.hector.freellee.ui.theme.CardBackground
@@ -165,15 +164,6 @@ fun ActivitiesScreen(
                     .fillMaxSize()
                     .padding(16.dp),
             ) {
-                // Connection status indicator (same as Data tab)
-                WatchStatusIndicator(
-                    uiState = viewModel.uiState.collectAsState().value,
-                    bleState = viewModel.connectionState.collectAsState().value,
-                    hasPairedDevice = viewModel.hasPairedDevice.collectAsState().value,
-                    bluetoothEnabled = true,
-                    modifier = Modifier.padding(vertical = 12.dp),
-                )
-
                 // Swipe help text — persistent, always visible above the list
                 Text(
                     "Swipe right to delete · Swipe left to tag · Tap to change type",

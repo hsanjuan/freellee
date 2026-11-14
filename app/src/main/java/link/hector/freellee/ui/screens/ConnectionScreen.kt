@@ -25,7 +25,6 @@ import androidx.compose.material.icons.filled.Battery3Bar
 import androidx.compose.material.icons.filled.Battery4Bar
 import androidx.compose.material.icons.filled.Battery5Bar
 import androidx.compose.material.icons.filled.Battery6Bar
-import androidx.compose.material.icons.filled.BluetoothConnected
 import androidx.compose.material.icons.filled.BluetoothDisabled
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Done
@@ -61,9 +60,6 @@ import link.hector.freellee.ui.charts.BatteryLineChart
 import link.hector.freellee.ui.components.FreelleeOutlinedButton
 import link.hector.freellee.ui.theme.AccentGreen
 import link.hector.freellee.ui.theme.CardBackground
-import link.hector.freellee.ui.theme.StatusConnected
-import link.hector.freellee.ui.theme.StatusConnecting
-import link.hector.freellee.ui.theme.StatusDisconnected
 import link.hector.freellee.ui.theme.StatusError
 import link.hector.freellee.ui.theme.TextPrimary
 import link.hector.freellee.ui.theme.TextSecondary
@@ -155,15 +151,10 @@ fun ConnectionScreen(
                 }
             }
 
-            // Connection status section
-            item {
-                ConnectionStatusCard(uiState, onDisconnect)
-            }
-
             // Connected device details
             if (uiState.connectionState == ConnectionState.READY) {
                 item {
-                    DeviceDetailsCard(uiState)
+                    DeviceDetailsCard(uiState, onDisconnect)
                 }
             }
 
@@ -303,50 +294,7 @@ private fun FoundDeviceCard(
 }
 
 @Composable
-private fun ConnectionStatusCard(uiState: DeviceUiState, onDisconnect: () -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = CardBackground),
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "Connection Status",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = TextSecondary,
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        iconForState(uiState.connectionState),
-                        contentDescription = null,
-                        tint = colorForState(uiState.connectionState),
-                    )
-                    Text(
-                        stateLabel(uiState),
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = colorForState(uiState.connectionState),
-                        modifier = Modifier.padding(start = 8.dp),
-                    )
-                    if (uiState.connectionState == ConnectionState.READY) {
-                        FreelleeOutlinedButton(
-                            onClick = onDisconnect,
-                            modifier = Modifier.padding(start = 8.dp),
-                        ) {
-                            Text("Disconnect")
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun DeviceDetailsCard(uiState: DeviceUiState) {
+private fun DeviceDetailsCard(uiState: DeviceUiState, onDisconnect: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = CardBackground),
@@ -363,6 +311,15 @@ private fun DeviceDetailsCard(uiState: DeviceUiState) {
                     "Battery",
                     "$pct% (${uiState.voltageMv} mV)",
                 )
+            }
+            if (uiState.connectionState == ConnectionState.READY) {
+                Spacer(Modifier.height(8.dp))
+                FreelleeOutlinedButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = onDisconnect,
+                ) {
+                    Text("Disconnect")
+                }
             }
         }
     }
@@ -470,25 +427,3 @@ private fun DetailRow(label: String, value: String) {
     }
 }
 
-private fun iconForState(state: ConnectionState) = when (state) {
-    ConnectionState.READY -> Icons.Default.BluetoothConnected
-    ConnectionState.CONNECTING -> Icons.Default.Hub
-    ConnectionState.DISCONNECTED -> Icons.Default.BluetoothDisabled
-}
-
-private fun stateLabel(uiState: DeviceUiState): String {
-    return when (uiState.connectionState) {
-        ConnectionState.READY -> "Connected"
-        ConnectionState.CONNECTING -> {
-            val target = uiState.deviceName ?: uiState.macAddress ?: "Unknown"
-            "Connecting to $target"
-        }
-        ConnectionState.DISCONNECTED -> "Disconnected"
-    }
-}
-
-private fun colorForState(state: ConnectionState) = when (state) {
-    ConnectionState.READY -> StatusConnected
-    ConnectionState.CONNECTING -> StatusConnecting
-    ConnectionState.DISCONNECTED -> StatusDisconnected
-}

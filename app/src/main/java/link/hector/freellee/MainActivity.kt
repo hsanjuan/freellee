@@ -48,11 +48,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import link.hector.freellee.ble.WatchGattClient
 import link.hector.freellee.ble.WatchRepository
 import link.hector.freellee.data.DeviceStore
 import link.hector.freellee.data.HealthConnectClient
 import link.hector.freellee.permissions.AppPermissions
+import link.hector.freellee.ui.components.WatchStatusIndicator
 import link.hector.freellee.ui.screens.ConnectionScreen
 import link.hector.freellee.ui.screens.DashboardScreen
 import link.hector.freellee.ui.screens.EventsScreen
@@ -219,6 +221,12 @@ private fun MainTabs(
     onRequestHealthConnect: () -> Unit,
 ) {
     val advancedEnabled by olleeViewModel.advancedEnabled.collectAsState()
+    val watchUiState by olleeViewModel.uiState.collectAsState()
+    val bleState by olleeViewModel.connectionState.collectAsState()
+    val hasPairedDevice by olleeViewModel.hasPairedDevice.collectAsState()
+    val context = LocalContext.current
+    val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+    val bluetoothEnabled = btManager?.adapter?.isEnabled == true
     val tabs = remember(advancedEnabled) {
         buildList {
             add(MainTab("data", "Data", Icons.Default.Insights))
@@ -279,6 +287,15 @@ private fun MainTabs(
                 onRequestBluetooth = onRequestBluetooth,
                 onOpenAppSettings = onOpenAppSettings,
                 onRequestHealthConnect = onRequestHealthConnect,
+            )
+
+            // Fixed connection status shared by every tab; it must not scroll with the pages.
+            WatchStatusIndicator(
+                uiState = watchUiState,
+                bleState = bleState,
+                hasPairedDevice = hasPairedDevice,
+                bluetoothEnabled = bluetoothEnabled,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
             )
 
             HorizontalPager(
