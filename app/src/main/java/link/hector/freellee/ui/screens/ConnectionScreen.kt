@@ -125,8 +125,8 @@ fun ConnectionScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             // Bluetooth status section
-            item {
-                if (!uiState.bluetoothEnabled) {
+            if (!uiState.bluetoothEnabled) {
+                item {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -164,7 +164,6 @@ fun ConnectionScreen(
                     "Paired Devices",
                     style = MaterialTheme.typography.titleMedium,
                     color = TextSecondary,
-                    modifier = Modifier.padding(top = 8.dp),
                 )
             }
 
