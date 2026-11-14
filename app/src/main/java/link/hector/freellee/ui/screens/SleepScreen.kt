@@ -28,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.CallMerge
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bedtime
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
@@ -150,7 +151,10 @@ fun SleepScreen(
 
     val allSessions = state?.sleepSessions.orEmpty()
     val sessions = allSessions
-        .filter { !it.dismissed && sleepDayKey(it.startEpochSecond, zone) == selectedDate }
+        .filter { !it.invalid && sleepDayKey(it.startEpochSecond, zone) == selectedDate }
+        .sortedBy { it.startEpochSecond }
+    val invalidSessions = allSessions
+        .filter { it.invalid && sleepDayKey(it.startEpochSecond, zone) == selectedDate }
         .sortedBy { it.startEpochSecond }
     val windowStart = sleepDayStart(selectedDate, zone)
     val windowEnd = sleepDayEnd(selectedDate, zone)
@@ -269,18 +273,42 @@ fun SleepScreen(
                             onAdjust = { editorTarget = session },
                             onMergeWithNext = { viewModel.mergeSleepSessionWithNext(session.id) },
                             onReset = { viewModel.resetSleepSession(session.id) },
-                            onDismiss = {
-                                viewModel.dismissSleepSession(session.id)
+                            onMarkInvalid = {
+                                viewModel.markSleepSessionInvalid(session.id)
                                 scope.launch {
-                                    val result = snackbarHostState.showSnackbar(
-                                        message = "Sleep session removed",
-                                        actionLabel = "Undo",
-                                        duration = SnackbarDuration.Long,
+                                    showSleepUndo(
+                                        snackbarHostState,
+                                        "Sleep marked invalid",
+                                        session,
+                                        viewModel,
                                     )
-                                    if (result == SnackbarResult.ActionPerformed) {
-                                        viewModel.restoreSleepSession(session)
-                                    }
                                 }
+                            },
+                            onDelete = {
+                                viewModel.deleteSleepSession(session.id)
+                                scope.launch {
+                                    showSleepUndo(
+                                        snackbarHostState,
+                                        "Sleep session removed",
+                                        session,
+                                        viewModel,
+                                    )
+                                }
+                            },
+                        )
+                    }
+                }
+
+                if (invalidSessions.isNotEmpty()) {
+                    item {
+                        SleepSectionHeading("Marked invalid")
+                    }
+                    items(invalidSessions.size) { index ->
+                        InvalidSleepRow(
+                            session = invalidSessions[index],
+                            zone = zone,
+                            onRestore = {
+                                viewModel.restoreSleepSession(invalidSessions[index])
                             },
                         )
                     }
@@ -305,6 +333,73 @@ fun SleepScreen(
                 .align(Alignment.BottomCenter)
                 .padding(16.dp),
         )
+    }
+}
+
+/** Shows the undo snackbar for a removal or invalidation and restores the snapshot on undo. */
+private suspend fun showSleepUndo(
+    hostState: SnackbarHostState,
+    message: String,
+    session: SleepSession,
+    viewModel: OlleeViewModel,
+) {
+    val result = hostState.showSnackbar(
+        message = message,
+        actionLabel = "Undo",
+        duration = SnackbarDuration.Long,
+    )
+    if (result == SnackbarResult.ActionPerformed) {
+        viewModel.restoreSleepSession(session)
+    }
+}
+
+/**
+ * Compact row for a detection the user rejected. It stays visible so the rejection can be
+ * reviewed or undone, while remaining out of summaries and Health Connect.
+ */
+@Composable
+private fun InvalidSleepRow(
+    session: SleepSession,
+    zone: ZoneId,
+    onRestore: () -> Unit,
+) {
+    val detectedStart = session.detectedStartEpochSecond
+    val detectedEnd = session.detectedEndEpochSecond
+    val rangeText = if (detectedStart != null && detectedEnd != null) {
+        formatSleepRange(detectedStart, detectedEnd, zone)
+    } else {
+        formatSleepRange(session.startEpochSecond, session.endEpochSecond, zone)
+    }
+    val confidence = session.detectedConfidence ?: session.confidence.takeIf { it > 0.0 }
+    val sourceLabel = if (session.source == SleepSessionSource.DETECTED) "Detected" else "Confirmed"
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Default.Block,
+            contentDescription = "Marked invalid",
+            tint = AccentAmber,
+            modifier = Modifier.size(16.dp),
+        )
+        Spacer(Modifier.width(8.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                "$sourceLabel $rangeText",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                "Not real sleep" + (confidence?.let { " · ${Math.round(it * 100)}%" } ?: ""),
+                style = MaterialTheme.typography.labelSmall,
+                color = TextTertiary,
+            )
+        }
+        TextButton(onClick = onRestore) {
+            Text("Restore", color = AccentAmber)
+        }
     }
 }
 
@@ -769,9 +864,15 @@ private fun SleepSessionCard(
     onAdjust: () -> Unit,
     onMergeWithNext: () -> Unit,
     onReset: () -> Unit,
-    onDismiss: () -> Unit,
+    onMarkInvalid: () -> Unit,
+    onDelete: () -> Unit,
 ) {
     val isEdited = session.source == SleepSessionSource.USER
+    // Detections and confirmed detections keep their origin so they can be labelled invalid
+    // instead of deleted. Only genuinely user-created sessions have nothing to preserve.
+    val fromDetection = session.source == SleepSessionSource.DETECTED ||
+        session.hasDetectedOrigin ||
+        session.id.startsWith("det_")
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = CardBackground),
@@ -889,10 +990,14 @@ private fun SleepSessionCard(
                     )
                 }
                 ActionIconButton(
-                    icon = Icons.Default.Delete,
-                    description = "Remove",
-                    tint = StatusError,
-                    onClick = onDismiss,
+                    icon = if (fromDetection) Icons.Default.Block else Icons.Default.Delete,
+                    description = if (fromDetection) {
+                        "Mark invalid"
+                    } else {
+                        "Delete sleep session"
+                    },
+                    tint = if (fromDetection) AccentAmber else StatusError,
+                    onClick = if (fromDetection) onMarkInvalid else onDelete,
                 )
             }
         }
@@ -948,7 +1053,7 @@ private fun SleepRhythmCard(
     // Confirmed sessions only: this is the data the user trusts and the part written to
     // Health Connect, so the rhythm should not be skewed by unconfirmed detections.
     val confirmed = sessions.filter {
-        !it.dismissed && it.source == SleepSessionSource.USER
+        !it.invalid && it.source == SleepSessionSource.USER
     }
     val days = (0..6).map { offset -> selectedDate.minusDays(offset.toLong()) }
     val mainsByDay = days.associateWith { day ->

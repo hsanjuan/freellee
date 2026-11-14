@@ -48,6 +48,7 @@ import link.hector.freellee.data.inferStepIntervalSeconds
 import link.hector.freellee.data.inferTemperatureIntervalSeconds
 import link.hector.freellee.data.inferTemperatureSampleSeconds
 import link.hector.freellee.data.isAdvancedEnabled
+import link.hector.freellee.data.markInvalid
 import link.hector.freellee.data.mergeSleepSessions
 import link.hector.freellee.data.sleepDayKey
 import link.hector.freellee.data.withAdjustedRange
@@ -874,7 +875,7 @@ class OlleeViewModel(
     fun confirmSleepSession(id: String) = viewModelScope.launch(Dispatchers.IO) {
         mutateSleepSessions { sessions ->
             sessions.map { session ->
-                if (session.id == id && !session.dismissed) {
+                if (session.id == id && !session.invalid) {
                     session.confirmDetected()
                 } else {
                     session
@@ -892,7 +893,7 @@ class OlleeViewModel(
                 // Keep the id stable so the Health Connect record is updated, not duplicated.
                 val adjusted = target.withAdjustedRange(startEpochSecond, endEpochSecond)
                 (sessions.filterNot { it.id == id } + adjusted).filterNot {
-                    it.source == SleepSessionSource.DETECTED && !it.dismissed && it.overlaps(adjusted)
+                    it.source == SleepSessionSource.DETECTED && !it.invalid && it.overlaps(adjusted)
                 }
             }
         }
@@ -901,7 +902,7 @@ class OlleeViewModel(
     fun mergeSleepSessionWithNext(id: String) = viewModelScope.launch(Dispatchers.IO) {
         mutateSleepSessions { sessions ->
             val zone = ZoneId.systemDefault()
-            val active = sessions.filter { !it.dismissed }.sortedBy { it.startEpochSecond }
+            val active = sessions.filter { !it.invalid }.sortedBy { it.startEpochSecond }
             val index = active.indexOfFirst { it.id == id }
             if (index < 0 || index >= active.lastIndex) return@mutateSleepSessions sessions
             val first = active[index]
@@ -914,26 +915,25 @@ class OlleeViewModel(
             val merged = combineSleepSessions(first, second, zone)
             sessions.filterNot { it.id == first.id || it.id == second.id || it.id == merged.id }
                 .filterNot {
-                    it.source == SleepSessionSource.DETECTED && !it.dismissed && it.overlaps(merged)
+                    it.source == SleepSessionSource.DETECTED && !it.invalid && it.overlaps(merged)
                 } + merged
         }
     }
 
     /**
      * Drops a confirmation or manual adjustment and lets the detector rebuild the session, so
-     * a wrong correction does not keep overriding better detection.
+     * a wrong correction does not keep overriding better detection. Invalid sessions are kept:
+     * they are explicit labels and must keep suppressing detections the user rejected.
      */
     fun resetSleepSession(id: String) = viewModelScope.launch(Dispatchers.IO) {
         mutateSleepSessions { sessions ->
-            val target = sessions.firstOrNull { it.id == id }
-                ?: return@mutateSleepSessions sessions
-            sessions.filterNot { it.id == id || (it.dismissed && it.touches(target)) }
+            sessions.filterNot { it.id == id }
         }
         redetectSleepSessions()
     }
 
     /**
-     * Discards every session in the detection window, including corrections and dismissed
+     * Discards every session in the detection window, including corrections and invalid
      * detections, and rebuilds the list from the raw data. Sessions older than the window are
      * kept because they can no longer be re-derived.
      */
@@ -974,33 +974,56 @@ class OlleeViewModel(
     }
 
     /**
-     * Re-adds a removed session, used by the undo action. It becomes a user-owned session so a
-     * later detection pass cannot drop it again.
+     * Re-adds a removed session, used by the undo action. The snapshot keeps its original source
+     * and confidence, so an undone invalidation stays a detection rather than becoming a
+     * confirmed sleep session.
      */
     fun restoreSleepSession(session: SleepSession) = viewModelScope.launch(Dispatchers.IO) {
         mutateSleepSessions { sessions ->
+            val baseId = session.id.removePrefix("dismissed_")
+            // Older invalidations lost their confidence when they were deleted. Prefer a current
+            // detection with the same identity so the restored session carries its data again.
+            val match = sessions.firstOrNull {
+                it.id == baseId && it.source == SleepSessionSource.DETECTED && !it.invalid
+            }
+            val restored = (match ?: session).copy(
+                invalid = false,
+                invalidatedAtEpochSecond = null,
+            )
             sessions.filterNot {
-                it.id == session.id || it.id == "dismissed_${session.id}"
-            } + session.copy(dismissed = false).let { restored ->
-                if (restored.source == SleepSessionSource.DETECTED) {
-                    restored.confirmDetected()
-                } else {
-                    restored.copy(source = SleepSessionSource.USER, confidence = 1.0)
-                }
+                it.id == session.id || it.id == baseId || it.id == restored.id
+            } + restored
+        }
+    }
+
+    /**
+     * Marks a session invalid instead of deleting it. Detection boundaries, confidence and any
+     * user correction stay on record for later evaluation of the detector.
+     */
+    fun markSleepSessionInvalid(id: String) = viewModelScope.launch(Dispatchers.IO) {
+        mutateSleepSessions { sessions ->
+            sessions.map { session ->
+                if (session.id == id) session.markInvalid() else session
             }
         }
     }
 
-    fun dismissSleepSession(id: String) = viewModelScope.launch(Dispatchers.IO) {
+    /**
+     * Deletes a user-created session. Sessions that came from a detection are only marked invalid:
+     * their detection remains useful data even when the sleep never happened.
+     */
+    fun deleteSleepSession(id: String) = viewModelScope.launch(Dispatchers.IO) {
         mutateSleepSessions { sessions ->
             val target = sessions.firstOrNull { it.id == id }
                 ?: return@mutateSleepSessions sessions
-            sessions.filterNot { it.id == id } + target.copy(
-                id = "dismissed_${target.id}",
-                dismissed = true,
-                confidence = 0.0,
-                source = SleepSessionSource.DETECTED,
-            )
+            val fromDetection = target.source == SleepSessionSource.DETECTED ||
+                target.hasDetectedOrigin ||
+                target.id.startsWith("det_")
+            if (fromDetection) {
+                sessions.map { if (it.id == id) it.markInvalid() else it }
+            } else {
+                sessions.filterNot { it.id == id }
+            }
         }
     }
 
@@ -1017,7 +1040,7 @@ class OlleeViewModel(
                     source = SleepSessionSource.USER,
                 )
                 sessions.filterNot {
-                    it.source == SleepSessionSource.DETECTED && !it.dismissed && it.overlaps(userSession)
+                    it.source == SleepSessionSource.DETECTED && !it.invalid && it.overlaps(userSession)
                 } + userSession
             }
         }
@@ -1057,7 +1080,7 @@ class OlleeViewModel(
             }
             // Only user-confirmed sessions are exported. Detections stay local until confirmed.
             val active = sessions.filter {
-                !it.dismissed &&
+                !it.invalid &&
                     it.source == SleepSessionSource.USER &&
                     it.endEpochSecond > it.startEpochSecond
             }

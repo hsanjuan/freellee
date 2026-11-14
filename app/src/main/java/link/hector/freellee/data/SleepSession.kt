@@ -51,8 +51,10 @@ enum class SleepSessionSource { DETECTED, USER }
  * One sleep bout. The start/end are Unix seconds in the device's local context.
  *
  * Detected sessions are recomputed from raw data. User sessions are authoritative and suppress
- * any overlapping detection. Dismissed sessions are kept out of the UI but still suppress a
- * repeated detection with the same boundaries.
+ * any overlapping detection. Invalid sessions (detections the user rejected as not real sleep)
+ * are kept out of the UI and summaries but retain their boundaries, confidence and origin so
+ * detection quality can be evaluated later. An invalid session also suppresses a repeat of the
+ * same detection.
  */
 data class SleepSession(
     val id: String,
@@ -61,7 +63,9 @@ data class SleepSession(
     val kind: SleepSessionKind,
     val confidence: Double,
     val source: SleepSessionSource,
-    val dismissed: Boolean = false,
+    val invalid: Boolean = false,
+    /** When the user marked this session invalid; null for valid sessions. */
+    val invalidatedAtEpochSecond: Long? = null,
     /** Detection boundaries retained after the user confirms or adjusts the session. */
     val detectedStartEpochSecond: Long? = null,
     val detectedEndEpochSecond: Long? = null,
@@ -127,7 +131,8 @@ fun SleepSession.withAdjustedRange(
         kind = inferSleepKind(startEpochSecond, endEpochSecond, zone),
         confidence = 1.0,
         source = SleepSessionSource.USER,
-        dismissed = false,
+        invalid = false,
+        invalidatedAtEpochSecond = null,
         detectedStartEpochSecond = detectedStartEpochSecond
             ?: originalStart.takeIf { isDetected },
         detectedEndEpochSecond = detectedEndEpochSecond
@@ -542,7 +547,7 @@ fun defaultSleepRange(
     val dayStart = sleepDayStart(date, zone)
     val previous = sessions
         .filter {
-            !it.dismissed &&
+            !it.invalid &&
                 it.kind == SleepSessionKind.MAIN &&
                 it.endEpochSecond <= dayStart
         }
@@ -607,7 +612,7 @@ private fun SleepSession.originConfidence(): Double? =
     detectedConfidence ?: confidence.takeIf { source == SleepSessionSource.DETECTED }
 
 /**
- * Merges fresh detections into the stored sessions. User sessions win, and dismissed sessions
+ * Merges fresh detections into the stored sessions. User sessions win, and invalid sessions
  * suppress a repeated detection.
  */
 fun mergeSleepSessions(
@@ -619,25 +624,27 @@ fun mergeSleepSessions(
     val detectionCutoff = nowEpochSecond - detectionDays * SECONDS_PER_DAY
     val retentionCutoff = nowEpochSecond - SLEEP_SESSION_RETENTION_DAYS * SECONDS_PER_DAY
 
+    // Sessions older than the detection window can no longer be re-derived. That includes
+    // invalid ones: they are labelled training data about the detector and are worth keeping.
     val old = existing.filter {
         it.endEpochSecond < detectionCutoff &&
-            it.startEpochSecond >= retentionCutoff &&
-            !it.dismissed
+            it.startEpochSecond >= retentionCutoff
     }
     val recent = existing.filter {
         it.endEpochSecond >= detectionCutoff && it.startEpochSecond >= retentionCutoff
     }
     val user = recent
-        .filter { it.source == SleepSessionSource.USER && !it.dismissed }
+        .filter { it.source == SleepSessionSource.USER && !it.invalid }
         .map { backfillDetectedOrigin(it, detected) }
-    val dismissed = recent.filter { it.dismissed }
+    val invalid = recent.filter { it.invalid }
+        .map { backfillInvalidOrigin(it, detected) }
 
     val result = mutableListOf<SleepSession>()
     result += old
     result += user
-    result += dismissed
+    result += invalid
     detected.forEach { detection ->
-        if (user.any { it.overlaps(detection) } || dismissed.any { it.overlaps(detection) }) {
+        if (user.any { it.overlaps(detection) } || invalid.any { it.overlaps(detection) }) {
             return@forEach
         }
         result += detection
@@ -648,6 +655,21 @@ fun mergeSleepSessions(
         .distinctBy { it.id }
         .sortedBy { it.startEpochSecond }
 }
+
+/**
+ * Marks a session as invalid without discarding it. The original boundaries, source, confidence
+ * and detection snapshot are kept so the rejection still says something about what the detector
+ * produced and how the user corrected it.
+ */
+fun SleepSession.markInvalid(nowEpochSecond: Long = Instant.now().epochSecond): SleepSession =
+    copy(
+        invalid = true,
+        invalidatedAtEpochSecond = invalidatedAtEpochSecond ?: nowEpochSecond,
+    )
+
+/** Revives a session that was marked invalid, keeping all of its original data. */
+fun SleepSession.restoreInvalid(): SleepSession =
+    copy(invalid = false, invalidatedAtEpochSecond = null)
 
 /**
  * Older confirmations predate the stored detection snapshot. When the session still carries a
@@ -667,6 +689,28 @@ private fun backfillDetectedOrigin(
         detectedStartEpochSecond = match.startEpochSecond,
         detectedEndEpochSecond = match.endEpochSecond,
         detectedConfidence = match.confidence,
+    )
+}
+
+/**
+ * Older invalidations predate the retention of detection snapshots. Attach the matching current
+ * detection once so the rejection keeps the detector's original confidence and boundaries even
+ * when the stored record was compacted at deletion time.
+ */
+private fun backfillInvalidOrigin(
+    session: SleepSession,
+    detected: List<SleepSession>,
+): SleepSession {
+    if (session.hasDetectedOrigin) return session
+    val match = detected
+        .filter { it.overlaps(session) }
+        .maxByOrNull { it.overlapSeconds(session) }
+        ?: return session
+    return session.copy(
+        detectedStartEpochSecond = match.startEpochSecond,
+        detectedEndEpochSecond = match.endEpochSecond,
+        detectedConfidence = match.confidence,
+        confidence = if (session.confidence <= 0.0) match.confidence else session.confidence,
     )
 }
 
@@ -733,7 +777,7 @@ fun buildSleepInsights(
         .sortedBy { it.tStart }
     val progressWindow = inProgressWindowSeconds(stepIntervalSeconds)
     val active = sessions.filter {
-        !it.dismissed &&
+        !it.invalid &&
             it.source == SleepSessionSource.USER &&
             it.endEpochSecond > it.startEpochSecond &&
             !it.isInProgress(nowEpochSecond, progressWindow)

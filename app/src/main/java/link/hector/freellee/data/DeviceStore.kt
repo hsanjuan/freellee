@@ -312,7 +312,8 @@ class DeviceStore(private val context: Context) {
             obj.put("kind", session.kind.name)
             obj.put("confidence", session.confidence)
             obj.put("source", session.source.name)
-            obj.put("dismissed", session.dismissed)
+            obj.put("invalid", session.invalid)
+            obj.put("invalidatedAt", session.invalidatedAtEpochSecond ?: JSONObject.NULL)
             obj.put("detectedStart", session.detectedStartEpochSecond ?: JSONObject.NULL)
             obj.put("detectedEnd", session.detectedEndEpochSecond ?: JSONObject.NULL)
             obj.put("detectedConfidence", session.detectedConfidence ?: JSONObject.NULL)
@@ -332,7 +333,14 @@ class DeviceStore(private val context: Context) {
                 source = SleepSessionSource.entries
                     .firstOrNull { it.name == obj.optString("source") }
                     ?: SleepSessionSource.DETECTED,
-                dismissed = obj.optBoolean("dismissed", false),
+                invalid = obj.optBoolean("invalid", obj.optBoolean("dismissed", false)),
+                invalidatedAtEpochSecond = if (
+                    obj.has("invalidatedAt") && !obj.isNull("invalidatedAt")
+                ) {
+                    obj.getLong("invalidatedAt")
+                } else {
+                    null
+                },
                 detectedStartEpochSecond = if (
                     obj.has("detectedStart") && !obj.isNull("detectedStart")
                 ) {

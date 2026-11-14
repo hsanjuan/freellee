@@ -74,9 +74,10 @@ Sessions can be corrected several ways:
 - **Adjust** the start/end with the time dialog, or select the block in the 24-hour view and **drag its handles**, snapping to 15 minutes.
 - **Merge with next session** when an awakening split one night into two.
 - **Add missed sleep**, prefilled from the previous main sleep.
-- **Remove** a false positive; a short snackbar offers **Undo**.
+- **Mark invalid** a detected session that was not real sleep; it moves to **Marked invalid**, keeps its detection boundaries and confidence, and can be restored later with **Undo** or **Restore**. Invalid detections are never exported and still suppress the same detection from reappearing.
+- **Remove** a manually added session; a short snackbar offers **Undo**.
 
-Corrections are kept as the authoritative version and suppress the overlapping detection. Brief awakenings are also rejoined automatically when the gap is short and quiet. A session that is still running is marked **In progress** and cannot be confirmed until it closes.
+Corrections are kept as the authoritative version and suppress the overlapping detection. Invalidated sessions are retained as labelled data so the detector can be evaluated and improved, rather than being thrown away. Brief awakenings are also rejoined automatically when the gap is short and quiet. A session that is still running is marked **In progress** and cannot be confirmed until it closes.
 
 Only **confirmed** sessions are written to Health Connect as `SleepSessionRecord`s; detections stay local until you confirm them. Each session keeps a stable Health Connect id, so adjusting or re-confirming it updates the existing record instead of adding a duplicate, and removing or resetting a session deletes it.
 

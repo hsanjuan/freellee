@@ -529,6 +529,114 @@ class SleepSessionTest {
     }
 
     @Test
+    fun `marking invalid keeps the detection data and can be undone`() {
+        val session = SleepSession(
+            id = "det_1000_2000",
+            startEpochSecond = 1_000L,
+            endEpochSecond = 2_000L,
+            kind = SleepSessionKind.NAP,
+            confidence = 0.72,
+            source = SleepSessionSource.DETECTED,
+        )
+
+        val marked = session.markInvalid(nowEpochSecond = 5_000L)
+
+        assertTrue(marked.invalid)
+        assertEquals(5_000L, marked.invalidatedAtEpochSecond)
+        assertEquals(session.id, marked.id)
+        assertEquals(session.startEpochSecond, marked.startEpochSecond)
+        assertEquals(session.endEpochSecond, marked.endEpochSecond)
+        assertEquals(0.72, marked.confidence, 0.0001)
+
+        val restored = marked.restoreInvalid()
+
+        assertFalse(restored.invalid)
+        assertNull(restored.invalidatedAtEpochSecond)
+        assertEquals(session, restored)
+    }
+
+    @Test
+    fun `an invalid detection suppresses a repeat of the same detection`() {
+        val start = nightDate.atTime(9, 0).atZone(zone).toEpochSecond()
+        val end = nightDate.atTime(11, 0).atZone(zone).toEpochSecond()
+        val detection = SleepSession(
+            id = "det_${start}_$end",
+            startEpochSecond = start,
+            endEpochSecond = end,
+            kind = SleepSessionKind.NAP,
+            confidence = 0.7,
+            source = SleepSessionSource.DETECTED,
+        )
+
+        val merged = mergeSleepSessions(
+            existing = listOf(detection.markInvalid()),
+            detected = listOf(detection),
+            nowEpochSecond = now(),
+        )
+
+        assertEquals(1, merged.size)
+        assertTrue(merged.single().invalid)
+    }
+
+    @Test
+    fun `an older invalid record recovers its detection snapshot`() {
+        val start = nightDate.atTime(9, 0).atZone(zone).toEpochSecond()
+        val end = nightDate.atTime(11, 0).atZone(zone).toEpochSecond()
+        val stale = SleepSession(
+            id = "dismissed_det_${start}_$end",
+            startEpochSecond = start,
+            endEpochSecond = end,
+            kind = SleepSessionKind.NAP,
+            confidence = 0.0,
+            source = SleepSessionSource.DETECTED,
+            invalid = true,
+        )
+        val detection = SleepSession(
+            id = "det_${start}_$end",
+            startEpochSecond = start,
+            endEpochSecond = end,
+            kind = SleepSessionKind.NAP,
+            confidence = 0.7,
+            source = SleepSessionSource.DETECTED,
+        )
+
+        val merged = mergeSleepSessions(
+            existing = listOf(stale),
+            detected = listOf(detection),
+            nowEpochSecond = now(),
+        )
+
+        val result = merged.single()
+        assertTrue(result.invalid)
+        assertEquals(start, result.detectedStartEpochSecond)
+        assertEquals(end, result.detectedEndEpochSecond)
+        assertEquals(0.7, result.detectedConfidence!!, 0.0001)
+        assertEquals(0.7, result.confidence, 0.0001)
+    }
+
+    @Test
+    fun `invalid sessions older than the detection window are still retained`() {
+        val oldStart = nightDate.minusDays(60).atTime(9, 0).atZone(zone).toEpochSecond()
+        val invalid = SleepSession(
+            id = "det_old",
+            startEpochSecond = oldStart,
+            endEpochSecond = oldStart + 3_600,
+            kind = SleepSessionKind.NAP,
+            confidence = 0.66,
+            source = SleepSessionSource.DETECTED,
+            invalid = true,
+        )
+
+        val merged = mergeSleepSessions(
+            existing = listOf(invalid),
+            detected = emptyList(),
+            nowEpochSecond = now(),
+        )
+
+        assertNotNull(merged.firstOrNull { it.id == "det_old" })
+    }
+
+    @Test
     fun `sleep day groups the night with the following morning nap`() {
         val midnight = nightDate.atTime(0, 0).atZone(zone).toEpochSecond()
         val morning = nightDate.atTime(9, 0).atZone(zone).toEpochSecond()
@@ -547,14 +655,14 @@ class SleepSessionTest {
             confidence = 1.0,
             source = SleepSessionSource.USER,
         )
-        val dismissed = SleepSession(
-            id = "dismissed",
+        val invalid = SleepSession(
+            id = "invalid",
             startEpochSecond = nightDate.atTime(9, 0).atZone(zone).toEpochSecond(),
             endEpochSecond = nightDate.atTime(11, 0).atZone(zone).toEpochSecond(),
             kind = SleepSessionKind.NAP,
-            confidence = 0.0,
+            confidence = 0.7,
             source = SleepSessionSource.DETECTED,
-            dismissed = true,
+            invalid = true,
         )
         val old = user.copy(
             id = "old",
@@ -589,7 +697,7 @@ class SleepSessionTest {
         )
 
         val merged = mergeSleepSessions(
-            existing = listOf(user, dismissed, old),
+            existing = listOf(user, invalid, old),
             detected = detected,
             nowEpochSecond = now(),
             detectionDays = 2,
@@ -598,7 +706,7 @@ class SleepSessionTest {
         assertEquals(4, merged.size)
         assertNotNull(merged.firstOrNull { it.id == "old" })
         assertNotNull(merged.firstOrNull { it.id == "user" })
-        assertNotNull(merged.firstOrNull { it.id == "dismissed" })
+        assertNotNull(merged.firstOrNull { it.id == "invalid" })
         assertNotNull(merged.firstOrNull { it.id == "det-new" })
         assertNull(merged.firstOrNull { it.id == "det-night" })
         assertNull(merged.firstOrNull { it.id == "det-nap" })
