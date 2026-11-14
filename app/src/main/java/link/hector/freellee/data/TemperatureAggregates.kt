@@ -84,9 +84,11 @@ data class TemperatureCoveragePoint(
         if (expectedCount <= 0) 0.0 else (validCount.toDouble() / expectedCount).coerceIn(0.0, 1.0)
 }
 
-/** Today's deviation and coverage for one day part, or null when there is too little data. */
+/** One day part's deviation and coverage, or null when there is too little data. */
 data class TemperaturePeriodSummary(
     val period: TemperaturePeriod,
+    /** Local day the day part belongs to; the previous day for early-morning windows. */
+    val date: LocalDate,
     val deviationCelsius: Double?,
     val coverage: Double?,
 )
@@ -100,8 +102,8 @@ data class TemperatureInsights(
     val recentNights: List<TemperatureNightSummary>,
     val threeNightDeviationCelsius: Double?,
     val currentPeriod: TemperatureCurrentPeriod?,
-    /** Today's deviation for each day part, in Night → Evening order. */
-    val todayPeriods: List<TemperaturePeriodSummary>,
+    /** The rolling last four day parts, oldest first, ending with the current one. */
+    val recentPeriods: List<TemperaturePeriodSummary>,
     val dailyCoverage: List<TemperatureCoveragePoint>,
 )
 
@@ -254,52 +256,87 @@ fun buildTemperatureInsights(
         recentNights = nights,
         threeNightDeviationCelsius = threeNight,
         currentPeriod = currentPeriodSummary(byDate[today], reference, now, zone, syncedUntil),
-        todayPeriods = todayPeriodSummaries(byDate[today], reference, now, zone, syncedUntil),
+        recentPeriods = recentPeriodSummaries(aggregates, byDate, now, zone, syncedUntil),
         dailyCoverage = dailyCoverage(aggregates, today, now, zone, syncedUntil),
     )
 }
 
-private fun todayPeriodSummaries(
-    day: TemperatureDayAggregate?,
-    reference: List<Double?>,
+/**
+ * The rolling window of the last four day parts ending with the current one. Before 06:00 this
+ * reaches back into the previous day, so the user always sees a complete 24-hour picture instead
+ * of empty future parts.
+ */
+private fun recentPeriodSummaries(
+    aggregates: List<TemperatureDayAggregate>,
+    byDate: Map<LocalDate, TemperatureDayAggregate>,
     now: ZonedDateTime,
     zone: ZoneId,
     syncedUntilEpochSecond: Long,
 ): List<TemperaturePeriodSummary> {
-    val order = listOf(
-        TemperaturePeriod.NIGHT,
-        TemperaturePeriod.MORNING,
-        TemperaturePeriod.AFTERNOON,
-        TemperaturePeriod.EVENING,
-    )
-    return order.map { period ->
-        val residuals = day?.let {
-            period.hours.mapNotNull { hour ->
-                val value = it.hourlyMedians.getOrNull(hour) ?: return@mapNotNull null
-                val expected = reference.getOrNull(hour) ?: return@mapNotNull null
-                value - expected
-            }
-        }.orEmpty()
-        val (periodStart, periodEnd) = period.getBoundaries(now.toLocalDate(), zone)
-        val elapsed = (minOf(
-            now.toEpochSecond(),
-            syncedUntilEpochSecond,
-            periodEnd.epochSecond,
-        ) - periodStart.epochSecond).coerceAtLeast(0L)
-        val expectedCount = (day?.expectedCount ?: 0) * (elapsed / 86400.0)
-        val readingCount = day?.let { aggregate ->
-            period.hours.sumOf { hour -> aggregate.hourCount(hour) }
-        } ?: 0
-        TemperaturePeriodSummary(
+    val slots = mutableListOf<Pair<LocalDate, TemperaturePeriod>>()
+    var slotDate = now.toLocalDate()
+    var slotPeriod = TemperaturePeriod.fromHour(now.hour)
+    repeat(4) {
+        slots += slotDate to slotPeriod
+        val previous = slotPeriod.previous()
+        if (slotPeriod == TemperaturePeriod.NIGHT) slotDate = slotDate.minusDays(1)
+        slotPeriod = previous
+    }
+    // References depend on the day, so compute one profile per involved date.
+    val references = slots.map { it.first }.distinct().associateWith { date ->
+        temperatureReferenceProfile(aggregates, beforeDate = date)
+    }
+    return slots.asReversed().map { (date, period) ->
+        periodSummary(
+            day = byDate[date],
+            reference = references[date].orEmpty(),
             period = period,
-            deviationCelsius = if (residuals.size >= 2) residuals.medianOrNull() else null,
-            coverage = if (expectedCount > 0.0) {
-                (readingCount / expectedCount).coerceIn(0.0, 1.0)
-            } else {
-                null
-            },
+            date = date,
+            now = now,
+            zone = zone,
+            syncedUntilEpochSecond = syncedUntilEpochSecond,
         )
     }
+}
+
+private fun periodSummary(
+    day: TemperatureDayAggregate?,
+    reference: List<Double?>,
+    period: TemperaturePeriod,
+    date: LocalDate,
+    now: ZonedDateTime,
+    zone: ZoneId,
+    syncedUntilEpochSecond: Long,
+): TemperaturePeriodSummary {
+    val residuals = day?.let {
+        period.hours.mapNotNull { hour ->
+            val value = it.hourlyMedians.getOrNull(hour) ?: return@mapNotNull null
+            val expected = reference.getOrNull(hour) ?: return@mapNotNull null
+            value - expected
+        }
+    }.orEmpty()
+    val (periodStart, periodEnd) = period.getBoundaries(date, zone)
+    // For past periods this is the full period; for the running one it stops at the last sync
+    // so readings that have not arrived yet do not look missing.
+    val elapsed = (minOf(
+        now.toEpochSecond(),
+        syncedUntilEpochSecond,
+        periodEnd.epochSecond,
+    ) - periodStart.epochSecond).coerceAtLeast(0L)
+    val expectedCount = (day?.expectedCount ?: 0) * (elapsed / 86400.0)
+    val readingCount = day?.let { aggregate ->
+        period.hours.sumOf { hour -> aggregate.hourCount(hour) }
+    } ?: 0
+    return TemperaturePeriodSummary(
+        period = period,
+        date = date,
+        deviationCelsius = if (residuals.size >= 2) residuals.medianOrNull() else null,
+        coverage = if (expectedCount > 0.0) {
+            (readingCount / expectedCount).coerceIn(0.0, 1.0)
+        } else {
+            null
+        },
+    )
 }
 
 private fun buildDayAggregate(

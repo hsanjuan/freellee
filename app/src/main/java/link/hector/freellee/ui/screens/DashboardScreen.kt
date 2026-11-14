@@ -85,6 +85,7 @@ import link.hector.freellee.viewmodel.HistoryEntry
 import link.hector.freellee.viewmodel.OlleeViewModel
 import link.hector.freellee.viewmodel.todayHeartRateStats
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -411,19 +412,19 @@ private fun TemperatureSection(
 
             Spacer(Modifier.height(12.dp))
             PeriodDeltasBlock(
-                periods = insights.todayPeriods,
+                periods = insights.recentPeriods,
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(8.dp))
             CoverageStatBlock(
-                periods = insights.todayPeriods,
+                periods = insights.recentPeriods,
                 modifier = Modifier.fillMaxWidth(),
             )
         }
     }
 }
 
-/** Today's deviation for each day part, in Night → Evening order. */
+/** Deviation for the rolling last four day parts, oldest first, ending with the current one. */
 @Composable
 private fun PeriodDeltasBlock(
     periods: List<TemperaturePeriodSummary>,
@@ -435,7 +436,7 @@ private fun PeriodDeltasBlock(
             .padding(horizontal = 10.dp, vertical = 12.dp),
     ) {
         Text(
-            "Today's deltas",
+            "Deltas · last 24h",
             style = MaterialTheme.typography.labelSmall,
             color = TextTertiary,
             maxLines = 1,
@@ -451,19 +452,14 @@ private fun PeriodDeltasBlock(
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                     )
-                    Text(
-                        text = summary.period.label,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = TextTertiary,
-                        maxLines = 1,
-                    )
+                    PeriodLabel(summary)
                 }
             }
         }
     }
 }
 
-/** Today's valid-reading share for each day part, in Night → Evening order. */
+/** Valid-reading share for the rolling last four day parts, oldest first. */
 @Composable
 private fun CoverageStatBlock(
     periods: List<TemperaturePeriodSummary>,
@@ -475,7 +471,7 @@ private fun CoverageStatBlock(
             .padding(horizontal = 10.dp, vertical = 12.dp),
     ) {
         Text(
-            "Valid readings",
+            "Valid readings · last 24h",
             style = MaterialTheme.typography.labelSmall,
             color = TextTertiary,
             maxLines = 1,
@@ -491,17 +487,34 @@ private fun CoverageStatBlock(
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                     )
-                    Text(
-                        text = summary.period.label,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = TextTertiary,
-                        maxLines = 1,
-                    )
+                    PeriodLabel(summary)
                 }
             }
         }
     }
 }
+
+/** Day-part label plus the date when the part belongs to a previous day. */
+@Composable
+private fun PeriodLabel(summary: TemperaturePeriodSummary) {
+    Text(
+        text = summary.period.label,
+        style = MaterialTheme.typography.labelSmall,
+        color = TextTertiary,
+        maxLines = 1,
+    )
+    if (summary.date != LocalDate.now()) {
+        Text(
+            text = formatPeriodDate(summary.date),
+            style = MaterialTheme.typography.labelSmall,
+            color = TextTertiary.copy(alpha = 0.7f),
+            maxLines = 1,
+        )
+    }
+}
+
+private fun formatPeriodDate(date: LocalDate): String =
+    DateTimeFormatter.ofPattern("MMM d", Locale.getDefault()).format(date)
 
 @Composable
 private fun SleepSection(sleep: SleepInsights) {

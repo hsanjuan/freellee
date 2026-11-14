@@ -177,15 +177,19 @@ class TemperatureAggregatesTest {
         assertEquals(3, insights.recentNights.size)
         assertEquals(
             listOf(
+                TemperaturePeriod.EVENING,
                 TemperaturePeriod.NIGHT,
                 TemperaturePeriod.MORNING,
                 TemperaturePeriod.AFTERNOON,
-                TemperaturePeriod.EVENING,
             ),
-            insights.todayPeriods.map { it.period },
+            insights.recentPeriods.map { it.period },
         )
-        assertEquals(0.5, insights.todayPeriods.first().deviationCelsius!!, 0.001)
-        assertNull(insights.todayPeriods[1].deviationCelsius)
+        assertEquals(firstDay.plusDays(6), insights.recentPeriods.first().date)
+        assertEquals(firstDay.plusDays(7), insights.recentPeriods.last().date)
+        val night = insights.recentPeriods.single { it.period == TemperaturePeriod.NIGHT }
+        assertEquals(0.5, night.deviationCelsius!!, 0.001)
+        val morning = insights.recentPeriods.single { it.period == TemperaturePeriod.MORNING }
+        assertNull(morning.deviationCelsius)
     }
 
     @Test
@@ -257,9 +261,10 @@ class TemperatureAggregatesTest {
         assertEquals(1.0, today.coverage, 0.001)
         // The morning period has not been synced at all, so it has no expected readings.
         assertEquals(0, syncedAtThree.currentPeriod!!.expectedCount)
-        val night = syncedAtThree.todayPeriods.single { it.period == TemperaturePeriod.NIGHT }
+        val night = syncedAtThree.recentPeriods.single { it.period == TemperaturePeriod.NIGHT }
         assertEquals(1.0, night.coverage!!, 0.001)
-        val morning = syncedAtThree.todayPeriods.single { it.period == TemperaturePeriod.MORNING }
+        val morning = syncedAtThree.recentPeriods
+            .single { it.period == TemperaturePeriod.MORNING }
         assertNull(morning.coverage)
 
         // Without a sync time the three unsynced hours look like missing readings.
@@ -267,6 +272,41 @@ class TemperatureAggregatesTest {
         val todayNow = syncedNow.dailyCoverage.single { it.date == day }
         assertEquals(90, todayNow.expectedCount)
         assertEquals(0.5, todayNow.coverage, 0.001)
+    }
+
+    @Test
+    fun `the rolling window reaches into the previous day during the night`() {
+        val day = firstDay.plusDays(10)
+        val records = (0 until 5).flatMap { index ->
+            nightRecords(day.minusDays(index.toLong()), 31.0)
+        }
+        val at = day.atTime(3, 0).atZone(zone).toEpochSecond()
+        val aggregates = buildTemperatureDayAggregates(
+            records = records,
+            nowEpochSecond = at,
+            zone = zone,
+        )
+
+        val insights = buildTemperatureInsights(aggregates, at, zone)
+
+        assertEquals(
+            listOf(
+                TemperaturePeriod.MORNING,
+                TemperaturePeriod.AFTERNOON,
+                TemperaturePeriod.EVENING,
+                TemperaturePeriod.NIGHT,
+            ),
+            insights.recentPeriods.map { it.period },
+        )
+        assertEquals(
+            listOf(
+                day.minusDays(1),
+                day.minusDays(1),
+                day.minusDays(1),
+                day,
+            ),
+            insights.recentPeriods.map { it.date },
+        )
     }
 
     @Test

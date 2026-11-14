@@ -41,6 +41,14 @@ enum class TemperaturePeriod(val label: String, val hours: IntRange) {
             entries.firstOrNull { hour in it.hours }
                 ?: throw IllegalArgumentException("Invalid hour: $hour")
     }
+
+    /** The day part immediately before this one; Night is preceded by the previous Evening. */
+    fun previous(): TemperaturePeriod = when (this) {
+        NIGHT -> EVENING
+        MORNING -> NIGHT
+        AFTERNOON -> MORNING
+        EVENING -> AFTERNOON
+    }
 }
 
 /** Readings below this value (in centi-degrees Celsius) are treated as sensor noise. */
