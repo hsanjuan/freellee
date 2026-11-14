@@ -15,6 +15,7 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.pager.HorizontalPager
@@ -27,12 +28,15 @@ import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Watch
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -48,13 +52,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import link.hector.freellee.ble.WatchGattClient
 import link.hector.freellee.ble.WatchRepository
 import link.hector.freellee.data.DeviceStore
 import link.hector.freellee.data.HealthConnectClient
 import link.hector.freellee.permissions.AppPermissions
-import link.hector.freellee.ui.components.WatchStatusIndicator
+import link.hector.freellee.ui.components.WatchStatusChip
 import link.hector.freellee.ui.screens.ConnectionScreen
 import link.hector.freellee.ui.screens.DashboardScreen
 import link.hector.freellee.ui.screens.EventsScreen
@@ -208,6 +213,7 @@ fun MainContent(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MainTabs(
     olleeViewModel: OlleeViewModel,
@@ -240,6 +246,7 @@ private fun MainTabs(
     }
     val pagerState = rememberPagerState(pageCount = { tabs.size })
     val coroutineScope = rememberCoroutineScope()
+    val currentTabLabel = tabs.getOrNull(pagerState.currentPage)?.label ?: "Freellee"
 
     // The tab list changes when advanced features are toggled, which shifts every index after
     // Sleep. Track the destination by key so the user stays on the page they were looking at.
@@ -254,6 +261,14 @@ private fun MainTabs(
     LaunchedEffect(pagerState) {
         snapshotFlow { pagerState.currentPage }.collect { page ->
             currentTabs.getOrNull(page)?.let { selectedTabKey = it.key }
+        }
+    }
+
+    val openDevices: () -> Unit = {
+        val index = tabs.indexOfFirst { it.key == "devices" }
+        if (index >= 0) {
+            selectedTabKey = "devices"
+            coroutineScope.launch { pagerState.animateScrollToPage(index) }
         }
     }
 
@@ -282,20 +297,35 @@ private fun MainTabs(
                 .fillMaxSize()
                 .padding(paddingValues),
         ) {
+            TopAppBar(
+                title = {
+                    Text(
+                        text = currentTabLabel,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                },
+                actions = {
+                    WatchStatusChip(
+                        uiState = watchUiState,
+                        bleState = bleState,
+                        hasPairedDevice = hasPairedDevice,
+                        bluetoothEnabled = bluetoothEnabled,
+                        onClick = openDevices,
+                    )
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background,
+                ),
+                // The outer Scaffold already applies the system-bar insets.
+                windowInsets = WindowInsets(0, 0, 0, 0),
+            )
+
             PermissionBanner(
                 state = permissions,
                 onRequestBluetooth = onRequestBluetooth,
                 onOpenAppSettings = onOpenAppSettings,
                 onRequestHealthConnect = onRequestHealthConnect,
-            )
-
-            // Fixed connection status shared by every tab; it must not scroll with the pages.
-            WatchStatusIndicator(
-                uiState = watchUiState,
-                bleState = bleState,
-                hasPairedDevice = hasPairedDevice,
-                bluetoothEnabled = bluetoothEnabled,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
             )
 
             HorizontalPager(

@@ -173,15 +173,6 @@ fun HistoryScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            item {
-                Text(
-                    "Synced records",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = TextSecondary,
-                    modifier = Modifier.padding(bottom = 4.dp),
-                )
-            }
-
             items(cards.size) { index ->
                 val card = cards[index]
                 HistorySummaryCard(

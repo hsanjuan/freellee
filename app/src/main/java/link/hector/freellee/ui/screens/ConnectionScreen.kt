@@ -158,15 +158,6 @@ fun ConnectionScreen(
                 }
             }
 
-            // Paired devices list
-            item {
-                Text(
-                    "Paired Devices",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = TextSecondary,
-                )
-            }
-
             if (uiState.pairedDevices.isEmpty()) {
                 item {
                     Card(
