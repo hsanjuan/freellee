@@ -101,7 +101,8 @@ class OlleeViewModel(
     bluetoothEnabledFlow: kotlinx.coroutines.flow.Flow<Boolean>,
 ) : ViewModel() {
 
-    private val _bluetoothEnabled = bluetoothEnabledFlow.stateIn(
+    /** Observable Bluetooth adapter state, so the status chip reacts when it is toggled. */
+    val bluetoothEnabled: StateFlow<Boolean> = bluetoothEnabledFlow.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5000),
         true,

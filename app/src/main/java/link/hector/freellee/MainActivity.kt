@@ -53,7 +53,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
 import link.hector.freellee.ble.WatchGattClient
 import link.hector.freellee.ble.WatchRepository
 import link.hector.freellee.data.DeviceStore
@@ -230,9 +229,7 @@ private fun MainTabs(
     val watchUiState by olleeViewModel.uiState.collectAsState()
     val bleState by olleeViewModel.connectionState.collectAsState()
     val hasPairedDevice by olleeViewModel.hasPairedDevice.collectAsState()
-    val context = LocalContext.current
-    val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-    val bluetoothEnabled = btManager?.adapter?.isEnabled == true
+    val bluetoothEnabled by olleeViewModel.bluetoothEnabled.collectAsState()
     val tabs = remember(advancedEnabled) {
         buildList {
             add(MainTab("data", "Data", Icons.Default.Insights))
