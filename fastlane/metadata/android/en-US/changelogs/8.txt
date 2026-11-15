@@ -1,0 +1,1 @@
+Battery history for paired watches with a compact 60-day trend, and clearer temperature records with invalid readings flagged. Sleep detections can now be marked invalid and restored instead of deleted. The Data tab shows the last 24 hours of day-part deltas and valid readings, and a new top bar shows the current tab plus a tappable watch status chip with live sync progress.
