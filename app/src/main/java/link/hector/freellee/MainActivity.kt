@@ -333,10 +333,12 @@ private fun MainTabs(
                     "data" -> DashboardScreen(
                         viewModel = olleeViewModel,
                         onSync = onSync,
+                        active = pagerState.currentPage == page,
                     )
                     "sleep" -> SleepScreen(
                         viewModel = olleeViewModel,
                         onSync = onSync,
+                        active = pagerState.currentPage == page,
                     )
                     "history" -> HistoryScreen(
                         viewModel = olleeViewModel,

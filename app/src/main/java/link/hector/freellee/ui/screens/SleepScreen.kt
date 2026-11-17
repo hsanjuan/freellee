@@ -1,5 +1,8 @@
 package link.hector.freellee.ui.screens
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -39,6 +42,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -57,6 +61,7 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -131,6 +136,7 @@ import kotlin.math.sqrt
 fun SleepScreen(
     viewModel: OlleeViewModel,
     onSync: () -> Unit,
+    active: Boolean,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val state = uiState as? DashboardUiState.Ready ?: viewModel.lastReadyState
@@ -228,6 +234,8 @@ fun SleepScreen(
                         steps = state?.stepIntervals.orEmpty(),
                         sessions = sessions,
                         zone = zone,
+                        active = active,
+                        loading = isRefreshing || state == null,
                         onAdjust = { id, start, end ->
                             viewModel.adjustSleepSession(id, start, end)
                         },
@@ -451,6 +459,24 @@ private fun SleepDayHeader(
     }
 }
 
+/** How long the sleep timeline takes to rise and for the step bars to grow. */
+private const val TIMELINE_REVEAL_DURATION_MS = 750
+
+/** Animates 0 → 1 whenever the Sleep tab becomes active, so the timeline replays on tab switches. */
+@Composable
+private fun rememberTimelineReveal(active: Boolean): Float {
+    val reveal = remember { Animatable(0f) }
+    LaunchedEffect(active) {
+        if (!active) return@LaunchedEffect
+        reveal.snapTo(0f)
+        reveal.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(TIMELINE_REVEAL_DURATION_MS, easing = FastOutSlowInEasing),
+        )
+    }
+    return reveal.value
+}
+
 @Composable
 private fun SleepTimelineCard(
     windowStart: Long,
@@ -459,6 +485,8 @@ private fun SleepTimelineCard(
     steps: List<StepInterval>,
     sessions: List<SleepSession>,
     zone: ZoneId,
+    active: Boolean,
+    loading: Boolean,
     onAdjust: (String, Long, Long) -> Unit,
 ) {
     val points = remember(temperature, windowStart, windowEnd, zone) {
@@ -468,17 +496,31 @@ private fun SleepTimelineCard(
         buildStepBars(steps, windowStart, windowEnd)
     }
     val blocks = sessions.filter { it.startEpochSecond < windowEnd && it.endEpochSecond > windowStart }
+    val reveal = rememberTimelineReveal(active)
 
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = CardBackground),
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                "24-hour view",
-                style = MaterialTheme.typography.labelLarge,
-                color = TextSecondary,
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "24-hour view",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = TextSecondary,
+                    modifier = Modifier.weight(1f),
+                )
+                if (loading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        color = AccentAmber,
+                        strokeWidth = 2.dp,
+                    )
+                }
+            }
             Spacer(Modifier.height(8.dp))
             Box(modifier = Modifier.fillMaxWidth().height(240.dp)) {
                 SleepTimelineCanvas(
@@ -488,6 +530,7 @@ private fun SleepTimelineCard(
                     stepBars = stepBars,
                     blocks = blocks,
                     zone = zone,
+                    reveal = reveal,
                     onAdjust = onAdjust,
                     modifier = Modifier.fillMaxSize(),
                 )
@@ -572,6 +615,7 @@ private fun SleepTimelineCanvas(
     stepBars: List<TimelineStepBar>,
     blocks: List<SleepSession>,
     zone: ZoneId,
+    reveal: Float,
     onAdjust: (String, Long, Long) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -615,6 +659,9 @@ private fun SleepTimelineCanvas(
     val axisMin = minTemp - tempPadding
     val axisMax = maxTemp + tempPadding
     val axisRange = (axisMax - axisMin).coerceAtLeast(0.1)
+    // Start the temperature line at a flat, plausible skin temperature and let it settle onto
+    // the day's readings when the tab is shown.
+    val revealBaseline = 30.0.coerceIn(axisMin, axisMax)
     val maxSteps = stepBars.maxOfOrNull { it.steps }?.coerceAtLeast(1) ?: 1
 
     Canvas(
@@ -752,7 +799,7 @@ private fun SleepTimelineCanvas(
         stepBars.forEach { bar ->
             val xStart = xFor(bar.startEpochSecond)
             val xEnd = xFor(bar.endEpochSecond)
-            val height = (bar.steps.toFloat() / maxSteps) * plotHeight * 0.18f
+            val height = (bar.steps.toFloat() / maxSteps) * plotHeight * 0.18f * reveal
             if (height > 0f) {
                 drawRoundRect(
                     color = AccentGreen.copy(alpha = 0.22f),
@@ -820,7 +867,8 @@ private fun SleepTimelineCanvas(
         var drawing = false
         points.forEach { point ->
             val x = xFor(point.epochSecond)
-            val y = yFor(point.celsius)
+            val celsius = revealBaseline + (point.celsius - revealBaseline) * reveal
+            val y = yFor(celsius)
             if (drawing) path.lineTo(x, y) else path.moveTo(x, y)
             drawing = true
         }

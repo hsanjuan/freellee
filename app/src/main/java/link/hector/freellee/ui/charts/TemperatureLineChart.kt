@@ -84,6 +84,7 @@ fun TemperatureLineChart(
     data: TemperatureChartData,
     modifier: Modifier = Modifier,
     loading: Boolean = false,
+    active: Boolean = true,
 ) {
     val zone = remember { ZoneId.systemDefault() }
     val points = data.points
@@ -96,9 +97,9 @@ fun TemperatureLineChart(
         points.mapNotNullTo(this) { it.medianCelsius }
         baselines.mapTo(this) { it.celsius }
     }
-    // A fixed, calm range while loading keeps the placeholder readable instead of showing the
-    // full spread of a month of readings, which can reach 25–40 °C.
-    val ticks = if (loading) {
+    // Keep the real range while loading so the axis and grid stay put between the placeholder
+    // and the final chart. Only a genuinely empty chart needs a readable fallback.
+    val ticks = if (allValues.isEmpty()) {
         LOADING_TEMPERATURE_TICKS
     } else {
         temperatureAxisTicks(allValues)
@@ -106,13 +107,13 @@ fun TemperatureLineChart(
     val valueMin = ticks.first()
     val valueMax = ticks.last()
 
-    // 0 = flat placeholder at 30 °C, 1 = the real readings. Rebuilt charts (sleep edits) never
-    // pass through loading, so this only animates after a sync or the initial load.
-    val reveal = remember { Animatable(if (loading) 0f else 1f) }
-    LaunchedEffect(loading) {
-        if (loading) {
-            reveal.snapTo(0f)
-        } else if (reveal.value < 1f) {
+    // 0 = flat placeholder at 30 °C, 1 = the real readings. Runs both when loading finishes and
+    // whenever the Data tab becomes active again.
+    val reveal = remember { Animatable(0f) }
+    LaunchedEffect(active, loading) {
+        if (!active) return@LaunchedEffect
+        reveal.snapTo(0f)
+        if (!loading) {
             reveal.animateTo(
                 targetValue = 1f,
                 animationSpec = tween(REVEAL_DURATION_MS, easing = FastOutSlowInEasing),
@@ -499,10 +500,10 @@ fun TemperatureLineChart(
             ChartLegend(
                 entries = buildList {
                     add(LegendEntry("Measured", measuredColor))
-                    if (!loading && baselines.isNotEmpty()) {
+                    if (baselines.isNotEmpty()) {
                         add(LegendEntry("Usual", baselineColor, dashed = true))
                     }
-                    if (!loading && data.notWornRanges.isNotEmpty()) {
+                    if (data.notWornRanges.isNotEmpty()) {
                         add(
                             LegendEntry(
                                 "No readings",
@@ -511,7 +512,7 @@ fun TemperatureLineChart(
                             ),
                         )
                     }
-                    if (!loading && data.unsyncedRange != null) {
+                    if (data.unsyncedRange != null) {
                         add(
                             LegendEntry(
                                 "Unsynced",

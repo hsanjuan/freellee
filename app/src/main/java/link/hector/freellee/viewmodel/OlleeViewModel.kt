@@ -41,6 +41,7 @@ import link.hector.freellee.data.SleepSession
 import link.hector.freellee.data.SleepSessionSource
 import link.hector.freellee.data.TemperatureDayAggregate
 import link.hector.freellee.data.TemperaturePeriod
+import link.hector.freellee.data.buildSleepInsights
 import link.hector.freellee.data.buildTemperatureDayAggregates
 import link.hector.freellee.data.combineSleepSessions
 import link.hector.freellee.data.confirmDetected
@@ -89,6 +90,12 @@ sealed class DashboardUiState {
     object SyncSuccessful : DashboardUiState()
     data class Error(val message: String) : DashboardUiState()
 }
+
+data class ChartLoadingState(
+    val steps: Boolean = true,
+    val sleep: Boolean = true,
+    val temperature: Boolean = true,
+)
 
 data class HistoryEntry(
     val value: Int,
@@ -164,7 +171,10 @@ class OlleeViewModel(
      * shows a skeleton meanwhile; small data edits reuse the existing chart and do not flicker.
      */
     private val _chartBuilding = MutableStateFlow(true)
-    val chartBuilding: StateFlow<Boolean> = _chartBuilding.asStateFlow()
+
+    /** Per-card build state so fast sections can appear before the expensive temperature chart. */
+    private val _chartLoading = MutableStateFlow(ChartLoadingState())
+    val chartLoading: StateFlow<ChartLoadingState> = _chartLoading.asStateFlow()
 
     val connectionState: StateFlow<ConnectionState> = repository.connectionState
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ConnectionState.DISCONNECTED)
@@ -202,13 +212,17 @@ class OlleeViewModel(
                 .filterIsInstance<DashboardUiState.Ready>()
                 .collectLatest { state ->
                     val now = Instant.now().epochSecond
-                    // Only show the skeleton when a sync or the first load is in progress. Sleep
-                    // edits also rebuild the chart, but replacing a drawn chart with a skeleton
-                    // for a few frames would be distracting.
+                    // Only show loading indicators when a sync or the first load is in progress.
+                    // Sleep edits also rebuild the chart, but replacing a drawn chart with a
+                    // skeleton for a few frames would be distracting.
                     val announceBuild = _chartBuilding.value
                     try {
                         chartRefreshMutex.withLock {
-                            _chartData.value = prepareChartData(state, now)
+                            prepareChartDataProgressively(
+                                state = state,
+                                nowEpochSecond = now,
+                                showLoading = announceBuild,
+                            )
                         }
                     } finally {
                         // A sync may have started while this snapshot was building; in that case
@@ -216,7 +230,14 @@ class OlleeViewModel(
                         val syncInProgress = _uiState.value is DashboardUiState.Connecting ||
                             _uiState.value is DashboardUiState.Connected ||
                             _uiState.value is DashboardUiState.Syncing
-                        if (announceBuild && !syncInProgress) _chartBuilding.value = false
+                        if (announceBuild && !syncInProgress) {
+                            _chartBuilding.value = false
+                            _chartLoading.value = ChartLoadingState(
+                                steps = false,
+                                sleep = false,
+                                temperature = false,
+                            )
+                        }
                     }
                 }
         }
@@ -229,13 +250,93 @@ class OlleeViewModel(
                     is DashboardUiState.Connecting,
                     is DashboardUiState.Connected,
                     is DashboardUiState.Syncing,
-                    -> _chartBuilding.value = true
+                    -> {
+                        _chartBuilding.value = true
+                        _chartLoading.value = ChartLoadingState()
+                    }
 
-                    is DashboardUiState.Error -> _chartBuilding.value = false
+                    is DashboardUiState.Error -> {
+                        _chartBuilding.value = false
+                        _chartLoading.value = ChartLoadingState(
+                            steps = false,
+                            sleep = false,
+                            temperature = false,
+                        )
+                    }
+
                     else -> Unit
                 }
             }
         }
+    }
+
+    /**
+     * Builds the chart in stages and publishes each one as soon as it is ready. Steps and sleep
+     * are much cheaper than the 28-day temperature window, so their cards stop waiting for the
+     * slowest chart. Keeping the old parts in place avoids shrinking the cards between stages.
+     */
+    private suspend fun prepareChartDataProgressively(
+        state: DashboardUiState.Ready,
+        nowEpochSecond: Long,
+        showLoading: Boolean,
+    ): DashboardChartData = withContext(Dispatchers.Default) {
+        val startedAt = System.nanoTime()
+        val previous = _chartData.value
+        val temperatureRecords = temperatureRecordItems(state)
+        // Advanced features can be switched off or the firmware reverted, so decide from the
+        // data in this snapshot rather than from a stale flag.
+        val profile = SamplingProfile(
+            stepIntervalSeconds = inferStepIntervalSeconds(state.stepIntervals),
+            temperatureIntervalSeconds = inferTemperatureIntervalSeconds(temperatureRecords),
+        )
+        val sleepEnabled = _advancedMode.value.isAdvancedEnabled(profile)
+        val sampleSeconds = inferTemperatureSampleSeconds(temperatureRecords)
+
+        if (showLoading) {
+            _chartLoading.value = ChartLoadingState()
+        }
+
+        // 1. Steps: cheap, and both step charts only depend on the intervals.
+        val steps = buildStepsChartData(state.stepIntervals, nowEpochSecond)
+        val afterSteps = DashboardChartData(
+            steps = steps,
+            temperature = previous.temperature,
+            sleep = previous.sleep,
+            computedAtEpochSecond = nowEpochSecond,
+        )
+        _chartData.value = afterSteps
+        _chartLoading.value = _chartLoading.value.copy(steps = false)
+
+        // 2. Sleep: summaries use the step intervals and cached temperature aggregates.
+        val sleep = buildSleepInsights(
+            sessions = if (sleepEnabled) state.sleepSessions else emptyList(),
+            temperatureRecords = temperatureRecords,
+            aggregates = state.temperatureAggregates,
+            nowEpochSecond = nowEpochSecond,
+            sampleSeconds = sampleSeconds,
+            stepIntervalSeconds = profile.stepIntervalSeconds,
+        )
+        val afterSleep = afterSteps.copy(sleep = sleep)
+        _chartData.value = afterSleep
+        _chartLoading.value = _chartLoading.value.copy(sleep = false)
+
+        // 3. Temperature: the most expensive part, so it comes last.
+        val temperature = buildTemperatureChartData(
+            records = temperatureRecords,
+            nowEpochSecond = nowEpochSecond,
+            aggregates = state.temperatureAggregates,
+            lastSyncEpochSecond = state.lastSyncTime?.epochSecond,
+        )
+        val complete = afterSleep.copy(temperature = temperature)
+        _chartData.value = complete
+        _chartLoading.value = _chartLoading.value.copy(temperature = false)
+
+        Log.d(
+            VM_TAG,
+            "Prepared chart data in ${(System.nanoTime() - startedAt) / 1_000_000}ms " +
+                "(steps, sleep, temperature)",
+        )
+        complete
     }
 
     /**
@@ -299,34 +400,6 @@ class OlleeViewModel(
             Log.d(
                 VM_TAG,
                 "Prepared clock chart data in ${(System.nanoTime() - startedAt) / 1_000_000}ms",
-            )
-        }
-    }
-
-    private suspend fun prepareChartData(
-        state: DashboardUiState.Ready,
-        nowEpochSecond: Long,
-    ): DashboardChartData = withContext(Dispatchers.Default) {
-        val startedAt = System.nanoTime()
-        val temperatureRecords = temperatureRecordItems(state)
-        // Advanced features can be switched off or the firmware reverted, so decide from the
-        // data in this snapshot rather than from a stale flag.
-        val profile = SamplingProfile(
-            stepIntervalSeconds = inferStepIntervalSeconds(state.stepIntervals),
-            temperatureIntervalSeconds = inferTemperatureIntervalSeconds(temperatureRecords),
-        )
-        val sleepEnabled = _advancedMode.value.isAdvancedEnabled(profile)
-        buildDashboardChartData(
-            stepIntervals = state.stepIntervals,
-            temperatureRecords = temperatureRecords,
-            nowEpochSecond = nowEpochSecond,
-            temperatureAggregates = state.temperatureAggregates,
-            sleepSessions = if (sleepEnabled) state.sleepSessions else emptyList(),
-            lastSyncEpochSecond = state.lastSyncTime?.epochSecond,
-        ).also {
-            Log.d(
-                VM_TAG,
-                "Prepared chart data in ${(System.nanoTime() - startedAt) / 1_000_000}ms",
             )
         }
     }
@@ -408,6 +481,7 @@ class OlleeViewModel(
                     lastSyncEpoch = lastSyncEpoch,
                     temperatureAggregates = temperatureAggregates,
                     advancedMode = data.advancedMode,
+                    detectSleep = false,
                 )
                 if (!emitted &&
                     _uiState.value !is DashboardUiState.Ready &&
@@ -430,6 +504,7 @@ class OlleeViewModel(
                 lastSyncEpoch = lastSyncEpoch,
                 temperatureAggregates = temperatureAggregates,
                 advancedMode = data.advancedMode,
+                detectSleep = false,
             )
         }
     }
@@ -451,17 +526,26 @@ class OlleeViewModel(
         lastSyncEpoch: Long?,
         temperatureAggregates: List<TemperatureDayAggregate>,
         advancedMode: AdvancedModeSetting,
+        detectSleep: Boolean,
     ) {
         val intervals = deviceStore.getStepIntervalsForDevice(macAddress).first()
         val stepGoal = deviceStore.getStepGoal().first()
         val sampling = samplingProfileFor(intervals, tempRecords)
         _samplingProfile.value = sampling
-        val sleepSessions = sleepMutationMutex.withLock {
-            refreshSleepSessions(
-                intervals = intervals,
-                temperatureRecords = tempRecords,
-                advancedEnabled = advancedMode.isAdvancedEnabled(sampling),
-            )
+        // Sleep detection is the most expensive part of a cached load. Cached sessions are
+        // already up to date because detection runs after every sync, so reuse them unless this
+        // load follows new data or there is nothing stored yet.
+        val existingSessions = deviceStore.getSleepSessions().first()
+        val sleepSessions = if (detectSleep || existingSessions.isEmpty()) {
+            sleepMutationMutex.withLock {
+                refreshSleepSessions(
+                    intervals = intervals,
+                    temperatureRecords = tempRecords,
+                    advancedEnabled = advancedMode.isAdvancedEnabled(sampling),
+                )
+            }
+        } else {
+            existingSessions
         }
         Log.d(VM_TAG, "loadDeviceState: mac=$macAddress, read ${intervals.size} step intervals from store")
         intervals.take(10).forEachIndexed { i, it ->
@@ -501,16 +585,22 @@ class OlleeViewModel(
         lastSyncEpoch: Long?,
         temperatureAggregates: List<TemperatureDayAggregate>,
         advancedMode: AdvancedModeSetting,
+        detectSleep: Boolean,
     ): Boolean {
         val allIntervals = deviceStore.getAllStepIntervalsAcrossDevices().first()
         val sampling = samplingProfileFor(allIntervals, tempRecords)
         _samplingProfile.value = sampling
-        val sleepSessions = sleepMutationMutex.withLock {
-            refreshSleepSessions(
-                intervals = allIntervals,
-                temperatureRecords = tempRecords,
-                advancedEnabled = advancedMode.isAdvancedEnabled(sampling),
-            )
+        val existingSessions = deviceStore.getSleepSessions().first()
+        val sleepSessions = if (detectSleep || existingSessions.isEmpty()) {
+            sleepMutationMutex.withLock {
+                refreshSleepSessions(
+                    intervals = allIntervals,
+                    temperatureRecords = tempRecords,
+                    advancedEnabled = advancedMode.isAdvancedEnabled(sampling),
+                )
+            }
+        } else {
+            existingSessions
         }
         Log.d(VM_TAG, "loadNoDeviceState: read ${allIntervals.size} step intervals from store, sampling=$sampling")
 
@@ -534,6 +624,7 @@ class OlleeViewModel(
         }
         // Nothing to draw, so stop showing the skeleton even though there is no Ready state.
         _chartBuilding.value = false
+        _chartLoading.value = ChartLoadingState(steps = false, sleep = false, temperature = false)
         return false
     }
 
@@ -928,6 +1019,7 @@ class OlleeViewModel(
                     lastSyncEpoch = lastSyncEpoch,
                     temperatureAggregates = temperatureAggregates,
                     advancedMode = _advancedMode.value,
+                    detectSleep = true,
                 )
             } else {
                 loadNoDeviceState(
@@ -938,6 +1030,7 @@ class OlleeViewModel(
                     lastSyncEpoch = lastSyncEpoch,
                     temperatureAggregates = temperatureAggregates,
                     advancedMode = _advancedMode.value,
+                    detectSleep = true,
                 )
             }
 

@@ -1,5 +1,8 @@
 package link.hector.freellee.ui.charts
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.horizontalScroll
@@ -51,6 +54,24 @@ import kotlin.math.roundToInt
 
 private val STEP_Y_AXIS_WIDTH = 40.dp
 
+/** How long the bars take to grow from the baseline to their value. */
+private const val STEP_REVEAL_DURATION_MS = 750
+
+/** Animates 0 → 1 each time [active] becomes true, so charts replay when the tab is shown. */
+@Composable
+private fun rememberRevealProgress(active: Boolean): Float {
+    val reveal = remember { Animatable(0f) }
+    LaunchedEffect(active) {
+        if (!active) return@LaunchedEffect
+        reveal.snapTo(0f)
+        reveal.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(STEP_REVEAL_DURATION_MS, easing = FastOutSlowInEasing),
+        )
+    }
+    return reveal.value
+}
+
 /**
  * Bar chart of daily step totals. The whole stored range is drawn into a horizontally
  * scrollable canvas, so dragging scrolls continuously (with fling) and bars can be partially
@@ -60,10 +81,12 @@ private val STEP_Y_AXIS_WIDTH = 40.dp
 fun StepsBarChart(
     data: StepsChartData,
     modifier: Modifier = Modifier,
+    active: Boolean = true,
 ) {
     val days = data.days
     val reference = data.referenceAverage
     val today = data.today
+    val reveal = rememberRevealProgress(active)
     val maxValue = maxOf(
         days.maxOfOrNull { it.steps }?.toDouble() ?: 0.0,
         reference ?: 0.0,
@@ -211,7 +234,8 @@ fun StepsBarChart(
                                     )
                                     return@forEachIndexed
                                 }
-                                val barHeight = (day.steps / axisMax * plotHeight).toFloat()
+                                val barHeight =
+                                    (day.steps / axisMax * plotHeight * reveal).toFloat()
                                 val barTop = bottom - barHeight
                                 val radius = min(4.dp.toPx(), barHeight / 2f)
                                 val path = Path().apply {
@@ -284,6 +308,7 @@ fun StepsBarChart(
 fun TodayStepsChart(
     data: StepsChartData,
     modifier: Modifier = Modifier,
+    active: Boolean = true,
 ) {
     val intervals = data.todayIntervals
     if (intervals.isEmpty()) {
@@ -295,6 +320,8 @@ fun TodayStepsChart(
         )
         return
     }
+
+    val reveal = rememberRevealProgress(active)
 
     val zone = remember { ZoneId.systemDefault() }
     val dayStart = remember(data.today, zone) {
@@ -369,7 +396,7 @@ fun TodayStepsChart(
             val barLeft = xForOffset(startOffset)
             val barRight = xForOffset(endOffset)
             val barWidth = (barRight - barLeft - 0.5.dp.toPx()).coerceAtLeast(1f)
-            val barHeight = (interval.steps.toFloat() / maxSteps) * plotHeight
+            val barHeight = (interval.steps.toFloat() / maxSteps) * plotHeight * reveal
             drawRect(
                 color = AccentGreen.copy(alpha = 0.85f),
                 topLeft = Offset(barLeft, bottom - barHeight),

@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.Thermostat
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -81,6 +82,7 @@ import link.hector.freellee.util.formatSleepDuration
 import link.hector.freellee.util.formatSleepRange
 import link.hector.freellee.util.formatTimestamp
 import link.hector.freellee.viewmodel.DashboardUiState
+import link.hector.freellee.viewmodel.ChartLoadingState
 import link.hector.freellee.viewmodel.HeartRateStats
 import link.hector.freellee.viewmodel.HistoryEntry
 import link.hector.freellee.viewmodel.OlleeViewModel
@@ -98,10 +100,14 @@ import kotlinx.coroutines.delay
 fun DashboardScreen(
     viewModel: OlleeViewModel,
     onSync: () -> Unit,
+    active: Boolean,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val chartData by viewModel.chartData.collectAsState()
-    val chartBuilding by viewModel.chartBuilding.collectAsState()
+    val chartLoading by viewModel.chartLoading.collectAsState()
+    val syncInProgress = uiState is DashboardUiState.Connecting ||
+        uiState is DashboardUiState.Connected ||
+        uiState is DashboardUiState.Syncing
     val snackbarHostState = remember { SnackbarHostState() }
     val advancedEnabled by viewModel.advancedEnabled.collectAsState()
     val nowEpochSecond = rememberCurrentEpochSecond()
@@ -185,7 +191,9 @@ fun DashboardScreen(
                 chartData = chartData,
                 sleepEnabled = advancedEnabled,
                 nowEpochSecond = nowEpochSecond,
-                chartBuilding = chartBuilding,
+                chartLoading = chartLoading,
+                heartRateLoading = syncInProgress,
+                active = active,
             )
         }
     }
@@ -213,7 +221,9 @@ private fun UnifiedDashboard(
     chartData: DashboardChartData,
     sleepEnabled: Boolean,
     nowEpochSecond: Long,
-    chartBuilding: Boolean,
+    chartLoading: ChartLoadingState,
+    heartRateLoading: Boolean,
+    active: Boolean,
 ) {
     val dailySteps = state?.steps ?: 0
     val heartRateRecords = state?.heartRateRecords ?: emptyList()
@@ -235,13 +245,17 @@ private fun UnifiedDashboard(
             TemperatureSection(
                 lastRecord = lastTemperature,
                 chartData = chartData.temperature,
-                chartBuilding = chartBuilding,
+                loading = chartLoading.temperature,
+                active = active,
             )
         }
 
         if (sleepEnabled) {
             item {
-                SleepSection(sleep = chartData.sleep)
+                SleepSection(
+                    sleep = chartData.sleep,
+                    loading = chartLoading.sleep,
+                )
             }
         }
 
@@ -252,6 +266,8 @@ private fun UnifiedDashboard(
                 stepGoal = state?.stepGoal,
                 lastSyncTime = state?.lastSyncTime,
                 chartData = chartData.steps,
+                loading = chartLoading.steps,
+                active = active,
             )
         }
 
@@ -259,6 +275,7 @@ private fun UnifiedDashboard(
             HeartRateSection(
                 stats = heartRate,
                 lastRecord = lastHeartRate,
+                loading = heartRateLoading,
             )
         }
     }
@@ -270,6 +287,8 @@ private fun StepsSection(
     stepGoal: Int?,
     lastSyncTime: Instant?,
     chartData: StepsChartData,
+    loading: Boolean,
+    active: Boolean,
 ) {
     val syncTime = remember {
         DateTimeFormatter.ofPattern("HH:mm", Locale.getDefault())
@@ -286,6 +305,7 @@ private fun StepsSection(
                 title = "Steps",
                 subtitle = lastSyncTime?.let { "Today · synced ${syncTime.format(it)}" } ?: "Today",
                 trailing = null,
+                loading = loading,
             )
 
             Spacer(Modifier.height(16.dp))
@@ -295,6 +315,7 @@ private fun StepsSection(
             }
             StepsBarChart(
                 data = chartData,
+                active = active,
                 modifier = Modifier.fillMaxWidth(),
             )
 
@@ -307,6 +328,7 @@ private fun StepsSection(
             Spacer(Modifier.height(4.dp))
             TodayStepsChart(
                 data = chartData,
+                active = active,
                 modifier = Modifier.fillMaxWidth(),
             )
         }
@@ -352,6 +374,7 @@ private fun StepGoalProgress(steps: Int, goal: Int) {
 private fun HeartRateSection(
     stats: HeartRateStats,
     lastRecord: HistoryEntry?,
+    loading: Boolean,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -366,6 +389,7 @@ private fun HeartRateSection(
                     formatTimestamp(Instant.ofEpochSecond(it.watchTimestampStart))
                 } ?: "No measurements yet",
                 trailing = lastRecord?.let { "${it.value} bpm" },
+                loading = loading,
             )
 
             Spacer(Modifier.height(16.dp))
@@ -400,7 +424,8 @@ private fun HeartRateSection(
 private fun TemperatureSection(
     lastRecord: HistoryEntry?,
     chartData: TemperatureChartData,
-    chartBuilding: Boolean,
+    loading: Boolean,
+    active: Boolean,
 ) {
     val insights = chartData.insights
     Card(
@@ -419,12 +444,14 @@ private fun TemperatureSection(
                     )
                 } ?: "No measurements yet",
                 trailing = insights.currentPeriod?.period?.label,
+                loading = loading,
             )
 
             Spacer(Modifier.height(16.dp))
             TemperatureLineChart(
                 data = chartData,
-                loading = chartBuilding,
+                loading = loading,
+                active = active,
                 modifier = Modifier.fillMaxWidth(),
             )
 
@@ -535,7 +562,7 @@ private fun formatPeriodDate(date: LocalDate): String =
     DateTimeFormatter.ofPattern("MMM d", Locale.getDefault()).format(date)
 
 @Composable
-private fun SleepSection(sleep: SleepInsights) {
+private fun SleepSection(sleep: SleepInsights, loading: Boolean) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = CardBackground),
@@ -547,6 +574,7 @@ private fun SleepSection(sleep: SleepInsights) {
                 title = "Sleep",
                 subtitle = "Confirmed sessions only",
                 trailing = null,
+                loading = loading,
             )
 
             Spacer(Modifier.height(16.dp))
@@ -666,6 +694,7 @@ private fun SectionHeader(
     title: String,
     subtitle: String,
     trailing: String?,
+    loading: Boolean = false,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -701,7 +730,14 @@ private fun SectionHeader(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        if (trailing != null) {
+        if (loading) {
+            Spacer(Modifier.width(12.dp))
+            CircularProgressIndicator(
+                modifier = Modifier.size(18.dp),
+                color = accent,
+                strokeWidth = 2.dp,
+            )
+        } else if (trailing != null) {
             Spacer(Modifier.width(12.dp))
             Text(
                 trailing,
