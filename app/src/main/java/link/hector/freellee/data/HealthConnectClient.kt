@@ -286,6 +286,7 @@ class HealthConnectClient(private val context: Context) {
         tStart: Long,
         tEnd: Long,
         exerciseType: Int,
+        clientRecordId: String? = null,
     ): Boolean {
         try {
             val hc = requireClient()
@@ -299,7 +300,7 @@ class HealthConnectClient(private val context: Context) {
 
             val startInstant = Instant.ofEpochSecond(tStart)
             val endInstant = Instant.ofEpochSecond(tEnd)
-            val metadata = createMetadata(startInstant, endInstant)
+            val metadata = createMetadata(startInstant, endInstant, clientRecordId)
 
             val record = ExerciseSessionRecord(
                 startTime = startInstant,
@@ -332,6 +333,7 @@ class HealthConnectClient(private val context: Context) {
     suspend fun writeSleepSession(
         tStart: Long,
         tEnd: Long,
+        clientRecordId: String? = null,
     ): Boolean {
         try {
             if (tEnd <= tStart) {
@@ -350,7 +352,7 @@ class HealthConnectClient(private val context: Context) {
 
             val startInstant = Instant.ofEpochSecond(tStart)
             val endInstant = Instant.ofEpochSecond(tEnd)
-            val metadata = createMetadata(startInstant, endInstant)
+            val metadata = createMetadata(startInstant, endInstant, clientRecordId)
 
             // The watch's stopwatch starts with the wearer awake in bed; the first 30 minutes
             // are treated as awake-in-bed, and the rest as generic sleep.
@@ -457,6 +459,50 @@ class HealthConnectClient(private val context: Context) {
             Log.d(TAG, "Deleted ${sessionIds.size} stale sleep sessions from Health Connect")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to delete stale sleep sessions from Health Connect", e)
+        }
+    }
+
+    // ── Pending activities / counter events ──────────────────────────────
+    //
+    // Their ids come from the watch data and are not UUIDs, but Health Connect only lets a
+    // record be updated or deleted by its UUID client record id. Each event stores a stable
+    // UUID (see DeviceStore.PendingActivity.uuid), so every write, correction and deletion
+    // aims at the same record.
+
+    /** Removes the exercise record previously written for a pending activity. */
+    suspend fun deleteExerciseSession(clientRecordId: String) {
+        try {
+            val hc = requireClient()
+            if (!hasPermission(ExerciseSessionRecord::class)) return
+            hc.deleteRecords(ExerciseSessionRecord::class, listOf(clientRecordId), emptyList())
+            Log.d(TAG, "Deleted exercise session $clientRecordId")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to delete exercise session from Health Connect", e)
+        }
+    }
+
+    /** Removes the stopwatch sleep record previously written for a pending activity. */
+    suspend fun deleteStopwatchSleepSession(clientRecordId: String) {
+        try {
+            val hc = requireClient()
+            if (!hasPermission(SleepSessionRecord::class)) return
+            hc.deleteRecords(SleepSessionRecord::class, listOf(clientRecordId), emptyList())
+            Log.d(TAG, "Deleted stopwatch sleep session $clientRecordId")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to delete stopwatch sleep session from Health Connect", e)
+        }
+    }
+
+    /** Removes the record previously written for a counter event with [meaningType]. */
+    suspend fun deleteCounterEvent(meaningType: String, clientRecordId: String) {
+        val recordClass = CounterEventWriter.recordClass(meaningType) ?: return
+        try {
+            val hc = requireClient()
+            if (!hasPermission(recordClass)) return
+            hc.deleteRecords(recordClass, listOf(clientRecordId), emptyList())
+            Log.d(TAG, "Deleted counter event ($meaningType) $clientRecordId")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to delete counter event from Health Connect", e)
         }
     }
 
@@ -712,11 +758,12 @@ class HealthConnectClient(private val context: Context) {
         tStart: Long,
         value: Int,
         meaningType: String,
+        clientRecordId: String? = null,
     ): Boolean {
         try {
             val hc = requireClient()
 
-            val record = CounterEventWriter.convert(value, tStart, meaningType)
+            val record = CounterEventWriter.convert(value, tStart, meaningType, clientRecordId)
                 ?: run {
                     Log.w(TAG, "writeCounterEvent: unknown meaning type $meaningType")
                     return false

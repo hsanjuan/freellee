@@ -346,9 +346,9 @@ private fun MainTabs(
                     )
                     "events" -> EventsScreen(
                         deviceStore = deviceStore,
-                        healthConnectClient = healthConnectClient,
                         onSync = onSync,
                         viewModel = olleeViewModel,
+                        active = pagerState.currentPage == page,
                     )
                     "devices" -> ConnectionScreen(
                         viewModel = deviceViewModel,

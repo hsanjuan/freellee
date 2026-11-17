@@ -19,6 +19,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
 import java.time.LocalDate
+import java.util.UUID
 
 private const val TAG = "DeviceStore"
 
@@ -564,12 +565,24 @@ class DeviceStore(private val context: Context) {
 
     data class PendingActivity(
         val id: String,
+        /**
+         * Stable UUID used as the Health Connect client record id, so a later correction or
+         * deletion addresses exactly the record this event wrote. Older events derive it from
+         * their id, which keeps migrations automatic.
+         */
+        val uuid: String = UUID.nameUUIDFromBytes("freellee_activity_$id".toByteArray()).toString(),
         val tStart: Long,
         val tEnd: Long,
         val durationMillis: Int,
         val syncTime: Long = 0L,
         val recordType: RecordType = RecordType.EXERCISE,
         val assignedExerciseType: Int? = null,
+        /**
+         * Which Health Connect record was written for this activity: [RecordType.EXERCISE] or
+         * [RecordType.SLEEP]. Null means "not written yet". Keeping the written kind lets the
+         * app delete the old record when the activity is retyped across record types.
+         */
+        val syncedKind: RecordType? = null,
     )
 
     /** Get all pending activities, ordered newest first. Deduplicates by ID. */
@@ -616,8 +629,14 @@ class DeviceStore(private val context: Context) {
     private fun parsePendingActivities(json: String?): List<PendingActivity> {
         if (json == null) return emptyList()
         return parseJsonArray(json) { obj ->
+            val id = obj.getString("id")
             PendingActivity(
-                id = obj.getString("id"),
+                id = id,
+                uuid = if (obj.has("uuid")) {
+                    obj.getString("uuid")
+                } else {
+                    UUID.nameUUIDFromBytes("freellee_activity_$id".toByteArray()).toString()
+                },
                 tStart = obj.getLong("tStart"),
                 tEnd = obj.getLong("tEnd"),
                 durationMillis = obj.getInt("durationMillis"),
@@ -626,12 +645,18 @@ class DeviceStore(private val context: Context) {
                     obj.optString("recordType", RecordType.EXERCISE.name),
                 ),
                 assignedExerciseType = if (obj.has("assignedExerciseType")) obj.getInt("assignedExerciseType") else null,
+                syncedKind = if (obj.has("syncedKind")) {
+                    recordTypeFromName(obj.getString("syncedKind"))
+                } else {
+                    null
+                },
             )
         }
     }
 
     private fun pendingActivitiesToJson(items: List<PendingActivity>): String = listToJson(items) { act, obj ->
         obj.put("id", act.id)
+        obj.put("uuid", act.uuid)
         obj.put("tStart", act.tStart)
         obj.put("tEnd", act.tEnd)
         obj.put("durationMillis", act.durationMillis)
@@ -639,6 +664,9 @@ class DeviceStore(private val context: Context) {
         obj.put("recordType", act.recordType.name)
         if (act.assignedExerciseType != null) {
             obj.put("assignedExerciseType", act.assignedExerciseType)
+        }
+        if (act.syncedKind != null) {
+            obj.put("syncedKind", act.syncedKind.name)
         }
     }
 
@@ -665,11 +693,15 @@ class DeviceStore(private val context: Context) {
 
     data class PendingCounterEvent(
         val id: String,
+        /** Stable Health Connect client record id; see [PendingActivity.uuid]. */
+        val uuid: String = UUID.nameUUIDFromBytes("freellee_counter_$id".toByteArray()).toString(),
         val tStart: Long,
         val value: Int,
         val syncTime: Long = 0L,
         /** A `CounterEventWriter.MEANING_*` constant, or null if not yet assigned. */
         val assignedMeaning: String? = null,
+        /** The meaning last written to Health Connect, or null if it was never written. */
+        val syncedMeaning: String? = null,
     )
 
     /** Get all pending counter events, ordered newest first. Deduplicates by ID. */
@@ -716,23 +748,34 @@ class DeviceStore(private val context: Context) {
     private fun parsePendingCounterEvents(json: String?): List<PendingCounterEvent> {
         if (json == null) return emptyList()
         return parseJsonArray(json) { obj ->
+            val id = obj.getString("id")
             PendingCounterEvent(
-                id = obj.getString("id"),
+                id = id,
+                uuid = if (obj.has("uuid")) {
+                    obj.getString("uuid")
+                } else {
+                    UUID.nameUUIDFromBytes("freellee_counter_$id".toByteArray()).toString()
+                },
                 tStart = obj.getLong("tStart"),
                 value = obj.getInt("value"),
                 syncTime = if (obj.has("syncTime")) obj.getLong("syncTime") else 0L,
                 assignedMeaning = if (obj.has("assignedMeaning")) obj.getString("assignedMeaning") else null,
+                syncedMeaning = if (obj.has("syncedMeaning")) obj.getString("syncedMeaning") else null,
             )
         }
     }
 
     private fun pendingCounterEventsToJson(items: List<PendingCounterEvent>): String = listToJson(items) { event, obj ->
         obj.put("id", event.id)
+        obj.put("uuid", event.uuid)
         obj.put("tStart", event.tStart)
         obj.put("value", event.value)
         obj.put("syncTime", event.syncTime)
         if (event.assignedMeaning != null) {
             obj.put("assignedMeaning", event.assignedMeaning)
+        }
+        if (event.syncedMeaning != null) {
+            obj.put("syncedMeaning", event.syncedMeaning)
         }
     }
 

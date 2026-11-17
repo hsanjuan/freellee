@@ -28,6 +28,7 @@ import link.hector.freellee.DEFAULT_WATCH_NAME
 import link.hector.freellee.STEP_RETENTION_DAYS
 import link.hector.freellee.TEMPERATURE_RETENTION_DAYS
 import link.hector.freellee.data.AdvancedModeSetting
+import link.hector.freellee.data.CounterEventWriter
 import link.hector.freellee.data.DeviceStore
 import link.hector.freellee.data.DeviceStore.RecordItem
 import link.hector.freellee.data.DeviceStore.StepInterval
@@ -134,6 +135,9 @@ class OlleeViewModel(
 
     /** Serializes chart rebuilds triggered by record changes and by the clock ticking. */
     private val chartRefreshMutex = Mutex()
+
+    /** Serializes Health Connect writes and deletions for pending activities and events. */
+    private val eventSyncMutex = Mutex()
 
     /** What the stored data says about the watch's sampling resolution. */
     private val _samplingProfile = MutableStateFlow(SamplingProfile.UNKNOWN)
@@ -1080,6 +1084,177 @@ class OlleeViewModel(
     /** Persist the advanced-feature preference; cached data reloads through the setting flow. */
     fun setAdvancedMode(mode: AdvancedModeSetting) = viewModelScope.launch(Dispatchers.IO) {
         deviceStore.saveAdvancedMode(mode)
+    }
+
+    // ── Pending events (stopwatch activities + counter events) ──────────
+    //
+    // An event is written to Health Connect as soon as it is assigned a type or meaning, and
+    // stays in the local list until the user deletes it. Re-assigning updates the existing
+    // record through its stable client record id; deleting removes it from Health Connect too.
+
+    /** Assigns an exercise type, or marks the activity as sleep, and writes it immediately. */
+    fun assignActivityType(
+        activity: DeviceStore.PendingActivity,
+        recordType: DeviceStore.RecordType,
+        exerciseType: Int?,
+    ) = viewModelScope.launch(Dispatchers.IO) {
+        eventSyncMutex.withLock {
+            val current = latestActivity(activity)
+            val recordId = current.uuid
+            // The record class changes between exercise and sleep, so an existing record of the
+            // other kind has to be deleted before writing the new one.
+            val previousKind = current.syncedKind
+            if (previousKind != null && previousKind != recordType) {
+                when (previousKind) {
+                    DeviceStore.RecordType.EXERCISE ->
+                        healthConnectClient.deleteExerciseSession(recordId)
+
+                    DeviceStore.RecordType.SLEEP ->
+                        healthConnectClient.deleteStopwatchSleepSession(recordId)
+                }
+            }
+
+            val updated = current.copy(
+                recordType = recordType,
+                assignedExerciseType = if (recordType == DeviceStore.RecordType.EXERCISE) {
+                    exerciseType
+                } else {
+                    null
+                },
+                syncedKind = null,
+            )
+            deviceStore.updatePendingActivity(updated)
+            if (writeActivity(updated)) {
+                deviceStore.updatePendingActivity(updated.copy(syncedKind = updated.recordType))
+            }
+        }
+    }
+
+    /** Deletes an activity locally and removes its Health Connect record when one was written. */
+    fun deleteActivity(activity: DeviceStore.PendingActivity) = viewModelScope.launch(Dispatchers.IO) {
+        eventSyncMutex.withLock {
+            val current = latestActivity(activity)
+            val recordId = current.uuid
+            when (current.syncedKind) {
+                DeviceStore.RecordType.EXERCISE -> healthConnectClient.deleteExerciseSession(recordId)
+                DeviceStore.RecordType.SLEEP -> healthConnectClient.deleteStopwatchSleepSession(recordId)
+                null -> Unit
+            }
+            deviceStore.removePendingActivity(current.id)
+        }
+    }
+
+    /** Assigns a counter meaning and writes or updates the matching Health Connect record. */
+    fun assignCounterMeaning(
+        event: DeviceStore.PendingCounterEvent,
+        meaningType: String,
+    ) = viewModelScope.launch(Dispatchers.IO) {
+        eventSyncMutex.withLock {
+            val current = latestCounterEvent(event)
+            val recordId = current.uuid
+            val previousMeaning = current.syncedMeaning
+            // Different meanings can map to different record classes; a same-class change is
+            // handled by re-inserting with the same client record id.
+            if (previousMeaning != null &&
+                previousMeaning != meaningType &&
+                CounterEventWriter.recordClass(previousMeaning) !=
+                CounterEventWriter.recordClass(meaningType)
+            ) {
+                healthConnectClient.deleteCounterEvent(previousMeaning, recordId)
+            }
+
+            val updated = current.copy(assignedMeaning = meaningType, syncedMeaning = null)
+            deviceStore.updatePendingCounterEvent(updated)
+            if (writeCounterEvent(updated)) {
+                deviceStore.updatePendingCounterEvent(updated.copy(syncedMeaning = meaningType))
+            }
+        }
+    }
+
+    /** Deletes a counter event locally and from Health Connect when it was written. */
+    fun deleteCounterEvent(event: DeviceStore.PendingCounterEvent) =
+        viewModelScope.launch(Dispatchers.IO) {
+            eventSyncMutex.withLock {
+                val current = latestCounterEvent(event)
+                val recordId = current.uuid
+                current.syncedMeaning?.let {
+                    healthConnectClient.deleteCounterEvent(it, recordId)
+                }
+                deviceStore.removePendingCounterEvent(current.id)
+            }
+        }
+
+    /**
+     * Writes events that were assigned earlier but could not reach Health Connect yet, for
+     * example because permission was granted after they were tagged. Runs when the Events tab
+     * opens, replacing the old explicit batch-sync button.
+     */
+    fun syncAssignedEvents() = viewModelScope.launch(Dispatchers.IO) {
+        eventSyncMutex.withLock {
+            deviceStore.getPendingActivities().first()
+                .filter { it.syncedKind == null && isAssigned(it) }
+                .forEach { activity ->
+                    if (writeActivity(activity)) {
+                        deviceStore.updatePendingActivity(
+                            activity.copy(syncedKind = activity.recordType),
+                        )
+                    }
+                }
+            deviceStore.getPendingCounterEvents().first()
+                .filter { it.syncedMeaning == null && it.assignedMeaning != null }
+                .forEach { event ->
+                    if (writeCounterEvent(event)) {
+                        deviceStore.updatePendingCounterEvent(
+                            event.copy(syncedMeaning = event.assignedMeaning),
+                        )
+                    }
+                }
+        }
+    }
+
+    private fun isAssigned(activity: DeviceStore.PendingActivity): Boolean = when (activity.recordType) {
+        DeviceStore.RecordType.EXERCISE -> activity.assignedExerciseType != null
+        DeviceStore.RecordType.SLEEP -> true
+    }
+
+    private suspend fun latestActivity(
+        activity: DeviceStore.PendingActivity,
+    ): DeviceStore.PendingActivity =
+        deviceStore.getPendingActivities().first().firstOrNull { it.id == activity.id } ?: activity
+
+    private suspend fun latestCounterEvent(
+        event: DeviceStore.PendingCounterEvent,
+    ): DeviceStore.PendingCounterEvent =
+        deviceStore.getPendingCounterEvents().first().firstOrNull { it.id == event.id } ?: event
+
+    private suspend fun writeActivity(activity: DeviceStore.PendingActivity): Boolean {
+        return when (activity.recordType) {
+            DeviceStore.RecordType.EXERCISE -> {
+                val type = activity.assignedExerciseType ?: return false
+                healthConnectClient.writeExerciseSessionWithType(
+                    tStart = activity.tStart,
+                    tEnd = activity.tEnd,
+                    exerciseType = type,
+                    clientRecordId = activity.uuid,
+                )
+            }
+
+            DeviceStore.RecordType.SLEEP -> healthConnectClient.writeSleepSession(
+                tStart = activity.tStart,
+                tEnd = activity.tEnd,
+                clientRecordId = activity.uuid,
+            )
+        }
+    }
+
+    private suspend fun writeCounterEvent(event: DeviceStore.PendingCounterEvent): Boolean {
+        val meaning = event.assignedMeaning ?: return false
+        return healthConnectClient.writeCounterEvent(
+            tStart = event.tStart,
+            value = event.value,
+            meaningType = meaning,
+            clientRecordId = event.uuid,
+        )
     }
 
     // ── Sleep session corrections ────────────────────────────────────────

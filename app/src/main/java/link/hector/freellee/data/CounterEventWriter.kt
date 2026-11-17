@@ -17,6 +17,7 @@ import androidx.health.connect.client.units.Volume
 import link.hector.freellee.DEFAULT_WATCH_NAME
 import java.time.Duration
 import java.time.Instant
+import kotlin.reflect.KClass
 
 /**
  * Converts a counter event (integer count + timestamp) into a Health Connect record
@@ -146,6 +147,7 @@ object CounterEventWriter {
         count: Int,
         timestamp: Long,
         meaningType: String,
+        clientRecordId: String? = null,
     ): Record? {
         return when (meaningType) {
             // ── Distance (count = km → meters) ────────────────────────
@@ -159,7 +161,7 @@ object CounterEventWriter {
                     startZoneOffset = null,
                     endTime = Instant.ofEpochSecond(timestamp).plusNanos(1),
                     endZoneOffset = null,
-                    metadata = createMetadata(),
+                    metadata = createMetadata(clientRecordId),
                 )
             }
 
@@ -172,7 +174,7 @@ object CounterEventWriter {
                     startZoneOffset = null,
                     endTime = Instant.ofEpochSecond(timestamp).plusNanos(1),
                     endZoneOffset = null,
-                    metadata = createMetadata(),
+                    metadata = createMetadata(clientRecordId),
                     mealType = MealType.MEAL_TYPE_UNKNOWN,
                 )
             }
@@ -183,36 +185,42 @@ object CounterEventWriter {
                 energyKcal = count * KCAL_PASTA,
                 mealType = MealType.MEAL_TYPE_UNKNOWN,
                 timestamp = timestamp,
+                clientRecordId = clientRecordId,
             )
             MEANING_NUTRITION_PIZZA -> nutritionMeal(
                 name = "Pizza",
                 energyKcal = count * KCAL_PER_PIZZA_SLICE,  // per slice
                 mealType = MealType.MEAL_TYPE_UNKNOWN,
                 timestamp = timestamp,
+                clientRecordId = clientRecordId,
             )
             MEANING_NUTRITION_NOODLES -> nutritionMeal(
                 name = "Noodles",
                 energyKcal = count * KCAL_NOODLES,
                 mealType = MealType.MEAL_TYPE_UNKNOWN,
                 timestamp = timestamp,
+                clientRecordId = clientRecordId,
             )
             MEANING_NUTRITION_SALAD -> nutritionMeal(
                 name = "Salad",
                 energyKcal = count * KCAL_SALAD,
                 mealType = MealType.MEAL_TYPE_UNKNOWN,
                 timestamp = timestamp,
+                clientRecordId = clientRecordId,
             )
             MEANING_NUTRITION_CEREAL -> nutritionMeal(
                 name = "Breakfast Cereal",
                 energyKcal = count * KCAL_CEREAL,
                 mealType = MealType.MEAL_TYPE_BREAKFAST,
                 timestamp = timestamp,
+                clientRecordId = clientRecordId,
             )
             MEANING_NUTRITION_SNACK -> nutritionMeal(
                 name = "Snack",
                 energyKcal = count * KCAL_SNACK,
                 mealType = MealType.MEAL_TYPE_SNACK,
                 timestamp = timestamp,
+                clientRecordId = clientRecordId,
             )
 
             // ── Nutrition: Coffee (caffeine) ──────────────────────────
@@ -221,12 +229,14 @@ object CounterEventWriter {
                 caffeineMg = count * CAFFEINE_MG_ESPRESSO,
                 startOffsetMinutes = 10,
                 timestamp = timestamp,
+                clientRecordId = clientRecordId,
             )
             MEANING_NUTRITION_COFFEE -> nutritionCoffee(
                 name = "Coffee",
                 caffeineMg = count * CAFFEINE_MG_COFFEE,
                 startOffsetMinutes = 20,
                 timestamp = timestamp,
+                clientRecordId = clientRecordId,
             )
 
             // ── Hydration ─────────────────────────────────────────────
@@ -238,7 +248,7 @@ object CounterEventWriter {
                     startZoneOffset = null,
                     endTime = Instant.ofEpochSecond(timestamp).plusNanos(1),
                     endZoneOffset = null,
-                    metadata = createMetadata(),
+                    metadata = createMetadata(clientRecordId),
                 )
             }
             MEANING_HYDRATION_GLASSES -> {
@@ -249,7 +259,7 @@ object CounterEventWriter {
                     startZoneOffset = null,
                     endTime = Instant.ofEpochSecond(timestamp).plusNanos(1),
                     endZoneOffset = null,
-                    metadata = createMetadata(),
+                    metadata = createMetadata(clientRecordId),
                 )
             }
 
@@ -258,7 +268,7 @@ object CounterEventWriter {
                 SexualActivityRecord(
                     time = Instant.ofEpochSecond(timestamp),
                     zoneOffset = null,
-                    metadata = createMetadata(),
+                    metadata = createMetadata(clientRecordId),
                 )
             }
 
@@ -308,6 +318,7 @@ object CounterEventWriter {
         energyKcal: Double,
         mealType: Int,
         timestamp: Long,
+        clientRecordId: String?,
     ): NutritionRecord {
         return NutritionRecord(
             energy = Energy.kilocalories(energyKcal),
@@ -315,7 +326,7 @@ object CounterEventWriter {
             startZoneOffset = null,
             endTime = Instant.ofEpochSecond(timestamp).plusNanos(1),
             endZoneOffset = null,
-            metadata = createMetadata(),
+            metadata = createMetadata(clientRecordId),
             name = name,
             mealType = mealType,
         )
@@ -327,6 +338,7 @@ object CounterEventWriter {
         caffeineMg: Double,
         startOffsetMinutes: Int,
         timestamp: Long,
+        clientRecordId: String?,
     ): NutritionRecord {
         val startInstant = Instant.ofEpochSecond(timestamp)
         return NutritionRecord(
@@ -335,19 +347,54 @@ object CounterEventWriter {
             startZoneOffset = null,
             endTime = startInstant,
             endZoneOffset = null,
-            metadata = createMetadata(),
+            metadata = createMetadata(clientRecordId),
             name = name,
             mealType = MealType.MEAL_TYPE_UNKNOWN,
         )
     }
 
     // ── Helper: Create metadata ───────────────────────────────────────────
-    private fun createMetadata(): HCMetadata {
+    private fun createMetadata(clientRecordId: String? = null): HCMetadata {
         val device = Device(
             type = Device.TYPE_WATCH,
             manufacturer = "Ollee Watch",
             model = DEFAULT_WATCH_NAME,
         )
-        return HCMetadata.activelyRecorded(device = device)
+        return if (clientRecordId != null) {
+            HCMetadata.activelyRecorded(
+                clientRecordId = clientRecordId,
+                clientRecordVersion = 1L,
+                device = device,
+            )
+        } else {
+            HCMetadata.activelyRecorded(device = device)
+        }
+    }
+
+    /**
+     * The Health Connect record class a meaning is written to. Used to address the record when
+     * its meaning changes or the event is deleted.
+     */
+    fun recordClass(meaningType: String): KClass<out Record>? = when (meaningType) {
+        MEANING_DISTANCE_RUNNING,
+        MEANING_DISTANCE_WALKING,
+        MEANING_DISTANCE_CYCLING -> DistanceRecord::class
+
+        MEANING_NUTRITION_ENERGY,
+        MEANING_NUTRITION_PASTA,
+        MEANING_NUTRITION_PIZZA,
+        MEANING_NUTRITION_NOODLES,
+        MEANING_NUTRITION_SALAD,
+        MEANING_NUTRITION_CEREAL,
+        MEANING_NUTRITION_SNACK,
+        MEANING_NUTRITION_ESPRESSO,
+        MEANING_NUTRITION_COFFEE -> NutritionRecord::class
+
+        MEANING_HYDRATION_LITERS,
+        MEANING_HYDRATION_GLASSES -> HydrationRecord::class
+
+        MEANING_SEXUAL_ACTIVITY -> SexualActivityRecord::class
+
+        else -> null
     }
 }
