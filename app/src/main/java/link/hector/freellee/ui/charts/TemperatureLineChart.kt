@@ -1,5 +1,13 @@
 package link.hector.freellee.ui.charts
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.horizontalScroll
@@ -53,6 +61,13 @@ import kotlin.math.roundToInt
 
 private val TEMPERATURE_Y_AXIS_WIDTH = 44.dp
 
+/** The placeholder line used while the chart is being prepared. */
+private const val LOADING_TEMPERATURE_CELSIUS = 30.0
+private val LOADING_TEMPERATURE_TICKS = listOf(28.0, 29.0, 30.0, 31.0, 32.0)
+
+/** How long the measured points take to move from the placeholder to their real values. */
+private const val REVEAL_DURATION_MS = 700
+
 /** One day-part slice of the chart, used for the separators and labels above the plot. */
 private data class ChartPeriodSegment(
     val startEpochSecond: Long,
@@ -68,6 +83,7 @@ private data class ChartPeriodSegment(
 fun TemperatureLineChart(
     data: TemperatureChartData,
     modifier: Modifier = Modifier,
+    loading: Boolean = false,
 ) {
     val zone = remember { ZoneId.systemDefault() }
     val points = data.points
@@ -80,9 +96,40 @@ fun TemperatureLineChart(
         points.mapNotNullTo(this) { it.medianCelsius }
         baselines.mapTo(this) { it.celsius }
     }
-    val ticks = temperatureAxisTicks(allValues)
+    // A fixed, calm range while loading keeps the placeholder readable instead of showing the
+    // full spread of a month of readings, which can reach 25–40 °C.
+    val ticks = if (loading) {
+        LOADING_TEMPERATURE_TICKS
+    } else {
+        temperatureAxisTicks(allValues)
+    }
     val valueMin = ticks.first()
     val valueMax = ticks.last()
+
+    // 0 = flat placeholder at 30 °C, 1 = the real readings. Rebuilt charts (sleep edits) never
+    // pass through loading, so this only animates after a sync or the initial load.
+    val reveal = remember { Animatable(if (loading) 0f else 1f) }
+    LaunchedEffect(loading) {
+        if (loading) {
+            reveal.snapTo(0f)
+        } else if (reveal.value < 1f) {
+            reveal.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(REVEAL_DURATION_MS, easing = FastOutSlowInEasing),
+            )
+        }
+    }
+
+    val shimmer = rememberInfiniteTransition(label = "temperature-loading")
+    val shimmerProgress by shimmer.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1800, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "temperature-loading-sweep",
+    )
 
     val scrollState = rememberScrollState()
     var lastMaxValue by remember { mutableIntStateOf(0) }
@@ -157,7 +204,11 @@ fun TemperatureLineChart(
         modifier = modifier
             .fillMaxWidth()
             .semantics {
-                contentDescription = "Skin temperature line chart"
+                contentDescription = if (loading) {
+                    "Skin temperature line chart, loading"
+                } else {
+                    "Skin temperature line chart"
+                }
             },
     ) {
         val viewportWidthPx = with(density) {
@@ -241,104 +292,162 @@ fun TemperatureLineChart(
                             }
 
                             // Time since the last sync: the readings are not missing, just pending.
-                            data.unsyncedRange?.let { range ->
-                                val xStart = xFor(range.startEpochSecond.coerceAtLeast(windowStart))
-                                val xEnd = xFor(range.endEpochSecond.coerceAtMost(endHour))
-                                if (xEnd > xStart) {
+                            if (!loading) {
+                                data.unsyncedRange?.let { range ->
+                                    val xStart =
+                                        xFor(range.startEpochSecond.coerceAtLeast(windowStart))
+                                    val xEnd = xFor(range.endEpochSecond.coerceAtMost(endHour))
+                                    if (xEnd > xStart) {
+                                        drawRect(
+                                            color = TextTertiary.copy(alpha = 0.06f * reveal.value),
+                                            topLeft = Offset(xStart, top),
+                                            size = Size(xEnd - xStart, plotHeight),
+                                        )
+                                        var stripeX = xStart
+                                        while (stripeX < xEnd) {
+                                            drawLine(
+                                                color = TextTertiary.copy(
+                                                    alpha = 0.22f * reveal.value,
+                                                ),
+                                                start = Offset(stripeX, top),
+                                                end = Offset(stripeX, top + plotHeight),
+                                                strokeWidth = 1.dp.toPx(),
+                                            )
+                                            stripeX += 6.dp.toPx()
+                                        }
+                                    }
+                                }
+
+                                // Shade gaps with no valid readings (not worn, outdoors, spike filtered out).
+                                data.notWornRanges.forEach { range ->
+                                    val xStart =
+                                        xFor(range.startEpochSecond.coerceAtLeast(windowStart))
+                                    val xEnd = xFor(range.endEpochSecond.coerceAtMost(endHour))
+                                    if (xEnd <= xStart) return@forEach
                                     drawRect(
-                                        color = TextTertiary.copy(alpha = 0.06f),
+                                        color = TextTertiary.copy(alpha = 0.18f * reveal.value),
                                         topLeft = Offset(xStart, top),
                                         size = Size(xEnd - xStart, plotHeight),
                                     )
-                                    var stripeX = xStart
-                                    while (stripeX < xEnd) {
-                                        drawLine(
-                                            color = TextTertiary.copy(alpha = 0.22f),
-                                            start = Offset(stripeX, top),
-                                            end = Offset(stripeX, top + plotHeight),
-                                            strokeWidth = 1.dp.toPx(),
-                                        )
-                                        stripeX += 6.dp.toPx()
-                                    }
                                 }
-                            }
-
-                            // Shade gaps with no valid readings (not worn, outdoors, spike filtered out).
-                            data.notWornRanges.forEach { range ->
-                                val xStart = xFor(range.startEpochSecond.coerceAtLeast(windowStart))
-                                val xEnd = xFor(range.endEpochSecond.coerceAtMost(endHour))
-                                if (xEnd <= xStart) return@forEach
-                                drawRect(
-                                    color = TextTertiary.copy(alpha = 0.18f),
-                                    topLeft = Offset(xStart, top),
-                                    size = Size(xEnd - xStart, plotHeight),
-                                )
                             }
 
                             val dashEffect = PathEffect.dashPathEffect(
                                 floatArrayOf(6.dp.toPx(), 5.dp.toPx()),
                             )
 
+                            // Values start at the 30 °C placeholder and slide to their final
+                            // position when the data lands. The alpha follows so the lines fade
+                            // in rather than popping.
+                            fun displayValue(value: Double): Double =
+                                LOADING_TEMPERATURE_CELSIUS +
+                                    (value - LOADING_TEMPERATURE_CELSIUS) * reveal.value
+
                             var previousBaseline: BaselineSegment? = null
-                            baselines.forEach { segment ->
-                                val xStart = xFor(segment.startEpochSecond)
-                                val xEnd = xFor(segment.endEpochSecond)
-                                val y = yFor(segment.celsius)
-                                previousBaseline?.let { previous ->
+                            if (!loading) {
+                                baselines.forEach { segment ->
+                                    val xStart = xFor(segment.startEpochSecond)
+                                    val xEnd = xFor(segment.endEpochSecond)
+                                    val celsius = displayValue(segment.celsius)
+                                    val y = yFor(celsius)
+                                    previousBaseline?.let { previous ->
+                                        drawLine(
+                                            color = baselineColor.copy(
+                                                alpha = 0.75f * reveal.value,
+                                            ),
+                                            start = Offset(xStart, yFor(displayValue(previous.celsius))),
+                                            end = Offset(xStart, y),
+                                            strokeWidth = 1.5.dp.toPx(),
+                                            pathEffect = dashEffect,
+                                        )
+                                    }
                                     drawLine(
-                                        color = baselineColor.copy(alpha = 0.75f),
-                                        start = Offset(xStart, yFor(previous.celsius)),
-                                        end = Offset(xStart, y),
+                                        color = baselineColor.copy(alpha = 0.75f * reveal.value),
+                                        start = Offset(xStart, y),
+                                        end = Offset(xEnd, y),
                                         strokeWidth = 1.5.dp.toPx(),
                                         pathEffect = dashEffect,
                                     )
+                                    previousBaseline = segment
                                 }
-                                drawLine(
-                                    color = baselineColor.copy(alpha = 0.75f),
-                                    start = Offset(xStart, y),
-                                    end = Offset(xEnd, y),
-                                    strokeWidth = 1.5.dp.toPx(),
-                                    pathEffect = dashEffect,
-                                )
-                                previousBaseline = segment
                             }
 
-                            val path = Path()
-                            var drawing = false
-                            points.forEach { point ->
-                                val median = point.medianCelsius
-                                if (median == null) {
-                                    drawing = false
-                                } else {
-                                    val x = xFor((point.startEpochSecond + point.endEpochSecond) / 2)
-                                    val y = yFor(median)
-                                    if (drawing) {
-                                        path.lineTo(x, y)
+                            if (!loading) {
+                                val path = Path()
+                                var drawing = false
+                                points.forEach { point ->
+                                    val median = point.medianCelsius
+                                    if (median == null) {
+                                        drawing = false
                                     } else {
-                                        path.moveTo(x, y)
-                                        drawing = true
+                                        val x = xFor(
+                                            (point.startEpochSecond + point.endEpochSecond) / 2,
+                                        )
+                                        val y = yFor(displayValue(median))
+                                        if (drawing) {
+                                            path.lineTo(x, y)
+                                        } else {
+                                            path.moveTo(x, y)
+                                            drawing = true
+                                        }
                                     }
                                 }
-                            }
-                            drawPath(
-                                path = path,
-                                color = measuredColor,
-                                style = Stroke(
-                                    width = 2.5.dp.toPx(),
-                                    cap = StrokeCap.Round,
-                                    join = StrokeJoin.Round,
-                                ),
-                            )
-                            points.forEach { point ->
-                                val median = point.medianCelsius ?: return@forEach
-                                drawCircle(
-                                    color = measuredColor,
-                                    radius = 2.5.dp.toPx(),
-                                    center = Offset(
-                                        xFor((point.startEpochSecond + point.endEpochSecond) / 2),
-                                        yFor(median),
+                                drawPath(
+                                    path = path,
+                                    color = measuredColor.copy(alpha = reveal.value),
+                                    style = Stroke(
+                                        width = 2.5.dp.toPx(),
+                                        cap = StrokeCap.Round,
+                                        join = StrokeJoin.Round,
                                     ),
                                 )
+                                points.forEach { point ->
+                                    val median = point.medianCelsius ?: return@forEach
+                                    drawCircle(
+                                        color = measuredColor.copy(alpha = reveal.value),
+                                        radius = 2.5.dp.toPx(),
+                                        center = Offset(
+                                            xFor((point.startEpochSecond + point.endEpochSecond) / 2),
+                                            yFor(displayValue(median)),
+                                        ),
+                                    )
+                                }
+                            }
+
+                            if (loading) {
+                                // Flat placeholder line across the whole window, with a soft
+                                // highlight sweeping over the visible part of it.
+                                val placeholderY = yFor(LOADING_TEMPERATURE_CELSIUS)
+                                drawLine(
+                                    color = measuredColor.copy(alpha = 0.35f),
+                                    start = Offset(left, placeholderY),
+                                    end = Offset(right, placeholderY),
+                                    strokeWidth = 2.5.dp.toPx(),
+                                    cap = StrokeCap.Round,
+                                )
+                                val sweepWidth = 96.dp.toPx()
+                                val sweepCenter = scrollState.value + shimmerProgress *
+                                    viewportWidthPx
+                                val sweepStart = (sweepCenter - sweepWidth / 2f)
+                                    .coerceIn(left, right)
+                                val sweepEnd = (sweepCenter + sweepWidth / 2f)
+                                    .coerceIn(left, right)
+                                if (sweepEnd > sweepStart) {
+                                    drawLine(
+                                        color = measuredColor.copy(alpha = 0.16f),
+                                        start = Offset(sweepStart, placeholderY),
+                                        end = Offset(sweepEnd, placeholderY),
+                                        strokeWidth = 10.dp.toPx(),
+                                        cap = StrokeCap.Round,
+                                    )
+                                    drawLine(
+                                        color = measuredColor,
+                                        start = Offset(sweepStart, placeholderY),
+                                        end = Offset(sweepEnd, placeholderY),
+                                        strokeWidth = 2.5.dp.toPx(),
+                                        cap = StrokeCap.Round,
+                                    )
+                                }
                             }
 
                             // Day-part separators and labels, drawn last so they stay legible.
@@ -375,7 +484,7 @@ fun TemperatureLineChart(
                         }
                     }
 
-                    if (points.all { it.medianCelsius == null } && baselines.isEmpty()) {
+                    if (!loading && points.all { it.medianCelsius == null } && baselines.isEmpty()) {
                         Text(
                             text = "No temperature readings yet",
                             style = MaterialTheme.typography.bodySmall,
@@ -390,10 +499,10 @@ fun TemperatureLineChart(
             ChartLegend(
                 entries = buildList {
                     add(LegendEntry("Measured", measuredColor))
-                    if (baselines.isNotEmpty()) {
+                    if (!loading && baselines.isNotEmpty()) {
                         add(LegendEntry("Usual", baselineColor, dashed = true))
                     }
-                    if (data.notWornRanges.isNotEmpty()) {
+                    if (!loading && data.notWornRanges.isNotEmpty()) {
                         add(
                             LegendEntry(
                                 "No readings",
@@ -402,7 +511,7 @@ fun TemperatureLineChart(
                             ),
                         )
                     }
-                    if (data.unsyncedRange != null) {
+                    if (!loading && data.unsyncedRange != null) {
                         add(
                             LegendEntry(
                                 "Unsynced",

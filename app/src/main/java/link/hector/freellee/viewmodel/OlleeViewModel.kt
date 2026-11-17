@@ -159,6 +159,13 @@ class OlleeViewModel(
     )
     val chartData: StateFlow<DashboardChartData> = _chartData.asStateFlow()
 
+    /**
+     * True while the chart is being prepared from scratch, including the whole sync. The chart
+     * shows a skeleton meanwhile; small data edits reuse the existing chart and do not flicker.
+     */
+    private val _chartBuilding = MutableStateFlow(true)
+    val chartBuilding: StateFlow<Boolean> = _chartBuilding.asStateFlow()
+
     val connectionState: StateFlow<ConnectionState> = repository.connectionState
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ConnectionState.DISCONNECTED)
 
@@ -195,10 +202,39 @@ class OlleeViewModel(
                 .filterIsInstance<DashboardUiState.Ready>()
                 .collectLatest { state ->
                     val now = Instant.now().epochSecond
-                    chartRefreshMutex.withLock {
-                        _chartData.value = prepareChartData(state, now)
+                    // Only show the skeleton when a sync or the first load is in progress. Sleep
+                    // edits also rebuild the chart, but replacing a drawn chart with a skeleton
+                    // for a few frames would be distracting.
+                    val announceBuild = _chartBuilding.value
+                    try {
+                        chartRefreshMutex.withLock {
+                            _chartData.value = prepareChartData(state, now)
+                        }
+                    } finally {
+                        // A sync may have started while this snapshot was building; in that case
+                        // keep the skeleton until the post-sync snapshot is ready.
+                        val syncInProgress = _uiState.value is DashboardUiState.Connecting ||
+                            _uiState.value is DashboardUiState.Connected ||
+                            _uiState.value is DashboardUiState.Syncing
+                        if (announceBuild && !syncInProgress) _chartBuilding.value = false
                     }
                 }
+        }
+
+        // The sync itself is the long wait. Flag it as a chart build so stale readings are
+        // replaced by the skeleton until the post-sync snapshot is ready.
+        viewModelScope.launch {
+            uiState.collect { state ->
+                when (state) {
+                    is DashboardUiState.Connecting,
+                    is DashboardUiState.Connected,
+                    is DashboardUiState.Syncing,
+                    -> _chartBuilding.value = true
+
+                    is DashboardUiState.Error -> _chartBuilding.value = false
+                    else -> Unit
+                }
+            }
         }
     }
 
@@ -496,6 +532,8 @@ class OlleeViewModel(
             _uiState.value = readyState
             return true
         }
+        // Nothing to draw, so stop showing the skeleton even though there is no Ready state.
+        _chartBuilding.value = false
         return false
     }
 

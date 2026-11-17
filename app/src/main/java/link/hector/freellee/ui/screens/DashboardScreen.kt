@@ -101,6 +101,7 @@ fun DashboardScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val chartData by viewModel.chartData.collectAsState()
+    val chartBuilding by viewModel.chartBuilding.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val advancedEnabled by viewModel.advancedEnabled.collectAsState()
     val nowEpochSecond = rememberCurrentEpochSecond()
@@ -184,6 +185,7 @@ fun DashboardScreen(
                 chartData = chartData,
                 sleepEnabled = advancedEnabled,
                 nowEpochSecond = nowEpochSecond,
+                chartBuilding = chartBuilding,
             )
         }
     }
@@ -211,6 +213,7 @@ private fun UnifiedDashboard(
     chartData: DashboardChartData,
     sleepEnabled: Boolean,
     nowEpochSecond: Long,
+    chartBuilding: Boolean,
 ) {
     val dailySteps = state?.steps ?: 0
     val heartRateRecords = state?.heartRateRecords ?: emptyList()
@@ -232,6 +235,7 @@ private fun UnifiedDashboard(
             TemperatureSection(
                 lastRecord = lastTemperature,
                 chartData = chartData.temperature,
+                chartBuilding = chartBuilding,
             )
         }
 
@@ -396,6 +400,7 @@ private fun HeartRateSection(
 private fun TemperatureSection(
     lastRecord: HistoryEntry?,
     chartData: TemperatureChartData,
+    chartBuilding: Boolean,
 ) {
     val insights = chartData.insights
     Card(
@@ -419,6 +424,7 @@ private fun TemperatureSection(
             Spacer(Modifier.height(16.dp))
             TemperatureLineChart(
                 data = chartData,
+                loading = chartBuilding,
                 modifier = Modifier.fillMaxWidth(),
             )
 
