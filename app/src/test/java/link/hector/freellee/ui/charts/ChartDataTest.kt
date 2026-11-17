@@ -290,6 +290,60 @@ class ChartDataTest {
     }
 
     @Test
+    fun `clock extension only appends time and usual baselines`() {
+        val now = epoch("2024-01-10T12:00:00Z")
+        val data = buildTemperatureChartData(
+            records = listOf(
+                temperature("2024-01-01T00:15:00Z", 3_000),
+                temperature("2024-01-01T06:15:00Z", 3_000),
+                temperature("2024-01-01T12:15:00Z", 3_000),
+                temperature("2024-01-01T18:15:00Z", 3_000),
+                temperature("2024-01-10T00:15:00Z", 3_200),
+                temperature("2024-01-10T06:15:00Z", 3_200),
+                temperature("2024-01-10T12:15:00Z", 3_200),
+                temperature("2024-01-10T18:15:00Z", 3_200),
+            ),
+            nowEpochSecond = now,
+            zone = zone,
+            lastSyncEpochSecond = now - 2 * 3_600,
+        )
+
+        val extended = extendTemperatureChartData(data, now + 3 * 3_600, zone)
+
+        assertEquals(epoch("2024-01-10T16:00:00Z"), extended.endHourEpochSecond)
+        assertEquals(data.totalHours + 3, extended.totalHours)
+        assertEquals(data.points.size + 3, extended.points.size)
+        assertEquals(3, extended.points.takeLast(3).count { it.medianCelsius == null })
+        assertEquals(data.baselines.size + 3, extended.baselines.size)
+        assertEquals(now + 3 * 3_600, extended.unsyncedRange!!.endEpochSecond)
+        // The measured part of the chart is untouched.
+        assertEquals(data.points.first(), extended.points.first())
+    }
+
+    @Test
+    fun `clock extension slides the window at the retention cap`() {
+        val now = epoch("2024-01-30T12:00:00Z")
+        val data = buildTemperatureChartData(
+            records = listOf(
+                temperature("2024-01-01T00:15:00Z", 3_000),
+                temperature("2024-01-30T10:15:00Z", 3_200),
+            ),
+            nowEpochSecond = now,
+            zone = zone,
+        )
+        assertEquals(672, data.totalHours)
+
+        val extended = extendTemperatureChartData(data, now + 24 * 3_600, zone)
+
+        assertEquals(672, extended.totalHours)
+        assertEquals(672, extended.points.size)
+        assertEquals(
+            shiftHours(data.windowStartEpochSecond, 24, zone),
+            extended.windowStartEpochSecond,
+        )
+    }
+
+    @Test
     fun `empty data produces a full empty viewport`() {
         val data = buildDashboardChartData(
             stepIntervals = emptyList(),

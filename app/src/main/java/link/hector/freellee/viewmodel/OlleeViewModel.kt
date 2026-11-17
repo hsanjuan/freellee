@@ -40,6 +40,7 @@ import link.hector.freellee.data.SleepInsights
 import link.hector.freellee.data.SleepSession
 import link.hector.freellee.data.SleepSessionSource
 import link.hector.freellee.data.TemperatureDayAggregate
+import link.hector.freellee.data.TemperaturePeriod
 import link.hector.freellee.data.buildTemperatureDayAggregates
 import link.hector.freellee.data.combineSleepSessions
 import link.hector.freellee.data.confirmDetected
@@ -57,6 +58,7 @@ import link.hector.freellee.ui.charts.DashboardChartData
 import link.hector.freellee.ui.charts.buildDashboardChartData
 import link.hector.freellee.ui.charts.buildStepsChartData
 import link.hector.freellee.ui.charts.buildTemperatureChartData
+import link.hector.freellee.ui.charts.extendTemperatureChartData
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.sync.Mutex
@@ -64,9 +66,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 private const val VM_TAG = "OlleeViewModel"
-
-/** How often clock-only chart refreshes rebuild the expensive sleep insights. */
-private const val SLEEP_INSIGHTS_REFRESH_SECONDS = 15L * 60L
 
 sealed class DashboardUiState {
     object Disconnected : DashboardUiState()
@@ -204,25 +203,38 @@ class OlleeViewModel(
     }
 
     /**
-     * Rebuilds the prepared chart data against the current clock even when no records changed,
-     * so the visible window advances while the app is open or after returning from background.
+     * Moves the prepared chart data forward with the clock. Between syncs only the time axis and
+     * the "usual" baseline need extending, so this is an append-only update. A full rebuild only
+     * happens when the day part or date changes (the summary card window moves) or on resume.
      */
-    fun refreshChartData(nowEpochSecond: Long = Instant.now().epochSecond) {
+    fun refreshChartData(
+        nowEpochSecond: Long = Instant.now().epochSecond,
+        forceFull: Boolean = false,
+    ) {
         val state = lastReadyState ?: (_uiState.value as? DashboardUiState.Ready) ?: return
         val previous = _chartData.value
         viewModelScope.launch {
             // Skip if a data-driven rebuild is already in flight; the next tick will catch up.
             if (!chartRefreshMutex.tryLock()) return@launch
             try {
-                // Sleep insights are expensive and only change with the data or over long
-                // windows, so reuse them for the minute clock ticks. Rebuild them when the
-                // previous build is old, which also covers returning from background.
-                val rebuildSleep = nowEpochSecond - previous.computedAtEpochSecond >=
-                    SLEEP_INSIGHTS_REFRESH_SECONDS
-                _chartData.value = if (rebuildSleep) {
-                    prepareChartData(state, nowEpochSecond)
-                } else {
+                val zone = ZoneId.systemDefault()
+                val previousLocal = Instant.ofEpochSecond(previous.computedAtEpochSecond)
+                    .atZone(zone)
+                val nowLocal = Instant.ofEpochSecond(nowEpochSecond).atZone(zone)
+                val windowChanged = previous.computedAtEpochSecond == 0L ||
+                    previousLocal.toLocalDate() != nowLocal.toLocalDate() ||
+                    TemperaturePeriod.fromHour(previousLocal.hour) !=
+                    TemperaturePeriod.fromHour(nowLocal.hour)
+                _chartData.value = if (forceFull || windowChanged) {
                     prepareClockChartData(state, nowEpochSecond, previous.sleep)
+                } else {
+                    previous.copy(
+                        temperature = extendTemperatureChartData(
+                            previous = previous.temperature,
+                            nowEpochSecond = nowEpochSecond,
+                            zone = zone,
+                        ),
+                    )
                 }
             } finally {
                 chartRefreshMutex.unlock()

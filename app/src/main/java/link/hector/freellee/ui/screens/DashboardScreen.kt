@@ -104,6 +104,15 @@ fun DashboardScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val advancedEnabled by viewModel.advancedEnabled.collectAsState()
     val nowEpochSecond = rememberCurrentEpochSecond()
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    // Refresh the summary windows as soon as the screen is resumed; minute ticks after that only
+    // extend the chart's time axis.
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            viewModel.refreshChartData(Instant.now().epochSecond, forceFull = true)
+        }
+    }
 
     LaunchedEffect(nowEpochSecond) {
         viewModel.refreshChartData(nowEpochSecond)

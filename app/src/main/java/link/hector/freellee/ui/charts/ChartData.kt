@@ -62,6 +62,10 @@ data class TemperatureChartData(
     val windowStartEpochSecond: Long,
     val endHourEpochSecond: Long,
     val totalHours: Int,
+    /** Last successful sync, used to extend the unsynced band without rescanning records. */
+    val lastSyncEpochSecond: Long?,
+    /** Inferred sampling interval, used for the unsynced-gap threshold. */
+    val sampleSeconds: Int,
 )
 
 /** A stretch with no valid temperature readings, shaded on the chart. */
@@ -201,6 +205,7 @@ fun buildTemperatureChartData(
             zone = zone,
         )
     }
+    val sampleSeconds = inferTemperatureSampleSeconds(records)
     val insights = buildTemperatureInsights(
         aggregates = effectiveAggregates,
         nowEpochSecond = nowEpochSecond,
@@ -215,15 +220,73 @@ fun buildTemperatureChartData(
     }
     return TemperatureChartData(
         points = hourlyTemperatureWindow(records, endHour, totalHours, zone),
-        notWornRanges = notWornRanges(records, windowStart, endHour),
+        notWornRanges = notWornRanges(records, windowStart, endHour, sampleSeconds),
         unsyncedRange = unsyncedRange(
-            records = records,
             windowStart = windowStart,
             nowEpochSecond = nowEpochSecond,
             lastSyncEpochSecond = lastSyncEpochSecond,
+            sampleSeconds = sampleSeconds,
         ),
         baselines = baselines,
         insights = insights,
+        windowStartEpochSecond = windowStart,
+        endHourEpochSecond = endHour,
+        totalHours = totalHours,
+        lastSyncEpochSecond = lastSyncEpochSecond,
+        sampleSeconds = sampleSeconds,
+    )
+}
+
+/**
+ * Moves the chart window forward to [nowEpochSecond] without rescanning records. The new time
+ * only needs empty hourly buckets and the "usual" baseline for those hours; measured data cannot
+ * change until the next sync.
+ */
+fun extendTemperatureChartData(
+    previous: TemperatureChartData,
+    nowEpochSecond: Long,
+    zone: ZoneId = ZoneId.systemDefault(),
+): TemperatureChartData {
+    val endHour = Instant.ofEpochSecond(nowEpochSecond)
+        .atZone(zone)
+        .truncatedTo(ChronoUnit.HOURS)
+        .plusHours(1)
+        .toEpochSecond()
+    if (endHour <= previous.endHourEpochSecond) {
+        return previous.copy(
+            unsyncedRange = unsyncedRange(
+                windowStart = previous.windowStartEpochSecond,
+                nowEpochSecond = nowEpochSecond,
+                lastSyncEpochSecond = previous.lastSyncEpochSecond,
+                sampleSeconds = previous.sampleSeconds,
+            ),
+        )
+    }
+    val addedHours = Duration.between(
+        Instant.ofEpochSecond(previous.endHourEpochSecond),
+        Instant.ofEpochSecond(endHour),
+    ).toHours().toInt().coerceAtLeast(1)
+    val maxHours = (TEMPERATURE_RETENTION_DAYS * 24).toInt()
+    val totalHours = (previous.totalHours + addedHours).coerceAtMost(maxHours)
+    val windowStart = shiftHours(endHour, -totalHours.toLong(), zone)
+    val appended = List(addedHours) { index ->
+        val start = shiftHours(previous.endHourEpochSecond, index.toLong(), zone)
+        HourlyTemperaturePoint(
+            startEpochSecond = start,
+            endEpochSecond = shiftHours(start, 1, zone),
+            medianCelsius = null,
+        )
+    }
+    return previous.copy(
+        points = (previous.points + appended).takeLast(totalHours),
+        notWornRanges = previous.notWornRanges.filter { it.endEpochSecond > windowStart },
+        unsyncedRange = unsyncedRange(
+            windowStart = windowStart,
+            nowEpochSecond = nowEpochSecond,
+            lastSyncEpochSecond = previous.lastSyncEpochSecond,
+            sampleSeconds = previous.sampleSeconds,
+        ),
+        baselines = extendTemperatureBaselines(previous, endHour, windowStart, zone),
         windowStartEpochSecond = windowStart,
         endHourEpochSecond = endHour,
         totalHours = totalHours,
@@ -231,21 +294,52 @@ fun buildTemperatureChartData(
 }
 
 /**
+ * Adds the "usual" line for the new hours. Uses the reference profile when available; otherwise
+ * repeats the same clock hour from the previous day so the step line stays continuous.
+ */
+private fun extendTemperatureBaselines(
+    previous: TemperatureChartData,
+    newEndHour: Long,
+    newWindowStart: Long,
+    zone: ZoneId,
+): List<BaselineSegment> {
+    val profile = previous.insights.referenceProfile
+    val added = mutableListOf<BaselineSegment>()
+    var hour = Instant.ofEpochSecond(previous.endHourEpochSecond)
+        .atZone(zone)
+        .truncatedTo(ChronoUnit.HOURS)
+    while (hour.toEpochSecond() < newEndHour) {
+        val start = hour.toEpochSecond()
+        val end = hour.plusHours(1).toEpochSecond()
+        val referenceEpoch = shiftHours(start, -24, zone)
+        val value = profile.getOrNull(hour.hour) ?: previous.baselines
+            .lastOrNull {
+                referenceEpoch >= it.startEpochSecond && referenceEpoch < it.endEpochSecond
+            }
+            ?.celsius
+        if (value != null && start < end) {
+            added += BaselineSegment(start, end, value)
+        }
+        hour = hour.plusHours(1)
+    }
+    return (previous.baselines.filter { it.endEpochSecond > newWindowStart } + added)
+        .sortedBy { it.startEpochSecond }
+}
+
+/**
  * The stretch between the last successful sync and now. Those readings have not arrived yet,
  * so the chart shows them separately from genuine gaps instead of flagging them as missing.
  */
 private fun unsyncedRange(
-    records: List<RecordItem>,
     windowStart: Long,
     nowEpochSecond: Long,
     lastSyncEpochSecond: Long?,
+    sampleSeconds: Int,
 ): NotWornRange? {
     val lastSync = lastSyncEpochSecond ?: return null
     val start = lastSync.coerceIn(windowStart, nowEpochSecond)
     if (start >= nowEpochSecond) return null
-    val sampleSeconds = inferTemperatureSampleSeconds(records).toLong()
-    // Ignore a sync that is only one or two samples old; that is normal live data.
-    val threshold = (sampleSeconds * 2).coerceIn(8L * 60L, 60L * 60L)
+    val threshold = (sampleSeconds * 2L).coerceIn(8L * 60L, 60L * 60L)
     return if (nowEpochSecond - start >= threshold) {
         NotWornRange(startEpochSecond = start, endEpochSecond = nowEpochSecond)
     } else {
@@ -262,6 +356,7 @@ private fun notWornRanges(
     records: List<RecordItem>,
     windowStart: Long,
     windowEnd: Long,
+    sampleSeconds: Int,
 ): List<NotWornRange> {
     val starts = records
         .asSequence()
@@ -273,8 +368,7 @@ private fun notWornRanges(
         .toList()
     if (starts.size < 2) return emptyList()
 
-    val sampleSeconds = inferTemperatureSampleSeconds(records).toLong()
-    val threshold = (sampleSeconds * 3).coerceIn(30L * 60L, 3L * 3_600L)
+    val threshold = (sampleSeconds * 3L).coerceIn(30L * 60L, 3L * 3_600L)
     return buildList {
         starts.zipWithNext { previous, next ->
             if (next - previous > threshold) {
