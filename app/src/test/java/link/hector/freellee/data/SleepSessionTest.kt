@@ -637,6 +637,31 @@ class SleepSessionTest {
     }
 
     @Test
+    fun `sleep day is labelled by the date its sleep ends`() {
+        val monday = LocalDate.of(2026, 11, 16)
+        val night = SleepSession(
+            id = "night",
+            startEpochSecond = monday.atTime(22, 0).atZone(zone).toEpochSecond(),
+            endEpochSecond = monday.plusDays(1).atTime(7, 0).atZone(zone).toEpochSecond(),
+            kind = SleepSessionKind.MAIN,
+            confidence = 1.0,
+            source = SleepSessionSource.USER,
+        )
+
+        assertEquals(
+            monday.plusDays(1),
+            sleepDayEndDate(monday, listOf(night), zone),
+        )
+        // An evening sleep that ends before midnight keeps its own date.
+        val evening = night.copy(
+            endEpochSecond = monday.atTime(23, 30).atZone(zone).toEpochSecond(),
+        )
+        assertEquals(monday, sleepDayEndDate(monday, listOf(evening), zone))
+        // Empty sleep days fall back to the end of the 16:00–16:00 window.
+        assertEquals(monday.plusDays(1), sleepDayEndDate(monday, emptyList(), zone))
+    }
+
+    @Test
     fun `sleep day groups the night with the following morning nap`() {
         val midnight = nightDate.atTime(0, 0).atZone(zone).toEpochSecond()
         val morning = nightDate.atTime(9, 0).atZone(zone).toEpochSecond()

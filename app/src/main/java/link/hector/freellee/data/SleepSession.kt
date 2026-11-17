@@ -177,6 +177,22 @@ fun sleepDayEnd(date: LocalDate, zone: ZoneId = ZoneId.systemDefault()): Long =
     sleepDayStart(date, zone) + SECONDS_PER_DAY
 
 /**
+ * The date to show for a sleep day: the day on which its sessions end. A night that starts on
+ * Monday and ends on Tuesday is labelled Tuesday. With no sessions, the end of the 16:00–16:00
+ * sleep-day window is used instead.
+ */
+fun sleepDayEndDate(
+    date: LocalDate,
+    sessions: List<SleepSession>,
+    zone: ZoneId = ZoneId.systemDefault(),
+): LocalDate = sessions
+    .asSequence()
+    .filter { sleepDayKey(it.startEpochSecond, zone) == date }
+    .map { Instant.ofEpochSecond(it.endEpochSecond).atZone(zone).toLocalDate() }
+    .maxOrNull()
+    ?: date.plusDays(1)
+
+/**
  * Maps a wall-clock time onto a sleep day: times before 16:00 belong to the morning after
  * [date], so a 02:00 edit stays on the same night as a 22:00 start.
  */

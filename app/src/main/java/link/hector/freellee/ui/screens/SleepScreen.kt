@@ -98,6 +98,7 @@ import link.hector.freellee.data.inProgressWindowSeconds
 import link.hector.freellee.data.isInProgress
 import link.hector.freellee.data.medianOrNull
 import link.hector.freellee.data.sleepDayEnd
+import link.hector.freellee.data.sleepDayEndDate
 import link.hector.freellee.data.sleepDayKey
 import link.hector.freellee.data.sleepDayStart
 import link.hector.freellee.ui.theme.AccentAmber
@@ -1056,6 +1057,7 @@ private fun SleepRhythmCard(
         !it.invalid && it.source == SleepSessionSource.USER
     }
     val days = (0..6).map { offset -> selectedDate.minusDays(offset.toLong()) }
+    val rowDates = days.associateWith { day -> sleepDayEndDate(day, confirmed, zone) }
     val mainsByDay = days.associateWith { day ->
         confirmed
             .filter {
@@ -1165,7 +1167,7 @@ private fun SleepRhythmCard(
                         .padding(vertical = 6.dp),
                 ) {
                     Text(
-                        formatShortDate(day),
+                        formatShortDate(rowDates.getValue(day)),
                         style = MaterialTheme.typography.bodyMedium,
                         color = TextPrimary,
                         modifier = Modifier.weight(1f),
