@@ -77,6 +77,8 @@ data class DashboardChartData(
     val steps: StepsChartData,
     val temperature: TemperatureChartData,
     val sleep: SleepInsights,
+    /** Clock used to build [sleep], so clock-only refreshes can reuse expensive insights. */
+    val computedAtEpochSecond: Long = 0L,
 )
 
 /** One bar in the daily steps chart. */
@@ -137,6 +139,7 @@ fun buildDashboardChartData(
         sampleSeconds = inferTemperatureSampleSeconds(temperatureRecords),
         stepIntervalSeconds = inferStepIntervalSeconds(stepIntervals),
     ),
+    computedAtEpochSecond = nowEpochSecond,
 )
 
 fun buildStepsChartData(

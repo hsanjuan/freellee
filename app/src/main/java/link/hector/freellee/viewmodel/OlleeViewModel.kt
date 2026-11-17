@@ -36,6 +36,7 @@ import link.hector.freellee.data.HealthConnectClient
 import link.hector.freellee.data.PairedDevice
 import link.hector.freellee.data.SLEEP_DETECTION_DAYS
 import link.hector.freellee.data.SamplingProfile
+import link.hector.freellee.data.SleepInsights
 import link.hector.freellee.data.SleepSession
 import link.hector.freellee.data.SleepSessionSource
 import link.hector.freellee.data.TemperatureDayAggregate
@@ -54,6 +55,8 @@ import link.hector.freellee.data.sleepDayKey
 import link.hector.freellee.data.withAdjustedRange
 import link.hector.freellee.ui.charts.DashboardChartData
 import link.hector.freellee.ui.charts.buildDashboardChartData
+import link.hector.freellee.ui.charts.buildStepsChartData
+import link.hector.freellee.ui.charts.buildTemperatureChartData
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.sync.Mutex
@@ -61,6 +64,9 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 private const val VM_TAG = "OlleeViewModel"
+
+/** How often clock-only chart refreshes rebuild the expensive sleep insights. */
+private const val SLEEP_INSIGHTS_REFRESH_SECONDS = 15L * 60L
 
 sealed class DashboardUiState {
     object Disconnected : DashboardUiState()
@@ -119,6 +125,9 @@ class OlleeViewModel(
 
     /** Serializes the one-time skin temperature id migration. */
     private val tempHcMigrationMutex = Mutex()
+
+    /** Serializes chart rebuilds triggered by record changes and by the clock ticking. */
+    private val chartRefreshMutex = Mutex()
 
     /** What the stored data says about the watch's sampling resolution. */
     private val _samplingProfile = MutableStateFlow(SamplingProfile.UNKNOWN)
@@ -187,44 +196,103 @@ class OlleeViewModel(
                 .filterIsInstance<DashboardUiState.Ready>()
                 .collectLatest { state ->
                     val now = Instant.now().epochSecond
-                    val prepared = withContext(Dispatchers.Default) {
-                        val startedAt = System.nanoTime()
-                        val temperatureRecords = state.temperatureRecords.map { history ->
-                            RecordItem(
-                                type = 0,
-                                tStart = history.watchTimestampStart,
-                                tEnd = history.watchTimestampEnd,
-                                value = history.value,
-                                syncTime = history.syncTimestamp,
-                            )
-                        }
-                        // Advanced features can be switched off or the firmware reverted, so
-                        // decide from the data in this snapshot rather than from a stale flag.
-                        val profile = SamplingProfile(
-                            stepIntervalSeconds = inferStepIntervalSeconds(state.stepIntervals),
-                            temperatureIntervalSeconds = inferTemperatureIntervalSeconds(
-                                temperatureRecords,
-                            ),
-                        )
-                        val sleepEnabled = _advancedMode.value.isAdvancedEnabled(profile)
-                        buildDashboardChartData(
-                            stepIntervals = state.stepIntervals,
-                            temperatureRecords = temperatureRecords,
-                            nowEpochSecond = now,
-                            temperatureAggregates = state.temperatureAggregates,
-                            sleepSessions = if (sleepEnabled) state.sleepSessions else emptyList(),
-                            lastSyncEpochSecond = state.lastSyncTime?.epochSecond,
-                        ).also {
-                            Log.d(
-                                VM_TAG,
-                                "Prepared chart data in ${(System.nanoTime() - startedAt) / 1_000_000}ms",
-                            )
-                        }
+                    chartRefreshMutex.withLock {
+                        _chartData.value = prepareChartData(state, now)
                     }
-                    _chartData.value = prepared
                 }
         }
     }
+
+    /**
+     * Rebuilds the prepared chart data against the current clock even when no records changed,
+     * so the visible window advances while the app is open or after returning from background.
+     */
+    fun refreshChartData(nowEpochSecond: Long = Instant.now().epochSecond) {
+        val state = lastReadyState ?: (_uiState.value as? DashboardUiState.Ready) ?: return
+        val previous = _chartData.value
+        viewModelScope.launch {
+            // Skip if a data-driven rebuild is already in flight; the next tick will catch up.
+            if (!chartRefreshMutex.tryLock()) return@launch
+            try {
+                // Sleep insights are expensive and only change with the data or over long
+                // windows, so reuse them for the minute clock ticks. Rebuild them when the
+                // previous build is old, which also covers returning from background.
+                val rebuildSleep = nowEpochSecond - previous.computedAtEpochSecond >=
+                    SLEEP_INSIGHTS_REFRESH_SECONDS
+                _chartData.value = if (rebuildSleep) {
+                    prepareChartData(state, nowEpochSecond)
+                } else {
+                    prepareClockChartData(state, nowEpochSecond, previous.sleep)
+                }
+            } finally {
+                chartRefreshMutex.unlock()
+            }
+        }
+    }
+
+    private suspend fun prepareClockChartData(
+        state: DashboardUiState.Ready,
+        nowEpochSecond: Long,
+        sleep: SleepInsights,
+    ): DashboardChartData = withContext(Dispatchers.Default) {
+        val startedAt = System.nanoTime()
+        val temperatureRecords = temperatureRecordItems(state)
+        DashboardChartData(
+            steps = buildStepsChartData(state.stepIntervals, nowEpochSecond),
+            temperature = buildTemperatureChartData(
+                records = temperatureRecords,
+                nowEpochSecond = nowEpochSecond,
+                aggregates = state.temperatureAggregates,
+                lastSyncEpochSecond = state.lastSyncTime?.epochSecond,
+            ),
+            sleep = sleep,
+            computedAtEpochSecond = nowEpochSecond,
+        ).also {
+            Log.d(
+                VM_TAG,
+                "Prepared clock chart data in ${(System.nanoTime() - startedAt) / 1_000_000}ms",
+            )
+        }
+    }
+
+    private suspend fun prepareChartData(
+        state: DashboardUiState.Ready,
+        nowEpochSecond: Long,
+    ): DashboardChartData = withContext(Dispatchers.Default) {
+        val startedAt = System.nanoTime()
+        val temperatureRecords = temperatureRecordItems(state)
+        // Advanced features can be switched off or the firmware reverted, so decide from the
+        // data in this snapshot rather than from a stale flag.
+        val profile = SamplingProfile(
+            stepIntervalSeconds = inferStepIntervalSeconds(state.stepIntervals),
+            temperatureIntervalSeconds = inferTemperatureIntervalSeconds(temperatureRecords),
+        )
+        val sleepEnabled = _advancedMode.value.isAdvancedEnabled(profile)
+        buildDashboardChartData(
+            stepIntervals = state.stepIntervals,
+            temperatureRecords = temperatureRecords,
+            nowEpochSecond = nowEpochSecond,
+            temperatureAggregates = state.temperatureAggregates,
+            sleepSessions = if (sleepEnabled) state.sleepSessions else emptyList(),
+            lastSyncEpochSecond = state.lastSyncTime?.epochSecond,
+        ).also {
+            Log.d(
+                VM_TAG,
+                "Prepared chart data in ${(System.nanoTime() - startedAt) / 1_000_000}ms",
+            )
+        }
+    }
+
+    private fun temperatureRecordItems(state: DashboardUiState.Ready): List<RecordItem> =
+        state.temperatureRecords.map { history ->
+            RecordItem(
+                type = 0,
+                tStart = history.watchTimestampStart,
+                tEnd = history.watchTimestampEnd,
+                value = history.value,
+                syncTime = history.syncTimestamp,
+            )
+        }
 
     suspend fun loadCachedData() {
         val devicesFlow = deviceStore.getAllPairedDevices()

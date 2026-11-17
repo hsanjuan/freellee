@@ -42,7 +42,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -52,6 +54,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import link.hector.freellee.data.SleepInsights
 import link.hector.freellee.data.SleepSessionKind
 import link.hector.freellee.data.SleepSessionSummary
@@ -86,6 +91,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -97,6 +103,11 @@ fun DashboardScreen(
     val chartData by viewModel.chartData.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val advancedEnabled by viewModel.advancedEnabled.collectAsState()
+    val nowEpochSecond = rememberCurrentEpochSecond()
+
+    LaunchedEffect(nowEpochSecond) {
+        viewModel.refreshChartData(nowEpochSecond)
+    }
 
     LaunchedEffect(uiState) {
         if (uiState is DashboardUiState.Error) {
@@ -163,9 +174,26 @@ fun DashboardScreen(
                 state = dashboardState,
                 chartData = chartData,
                 sleepEnabled = advancedEnabled,
+                nowEpochSecond = nowEpochSecond,
             )
         }
     }
+}
+
+/** Wall-clock seconds that refresh every minute while this screen is resumed. */
+@Composable
+private fun rememberCurrentEpochSecond(): Long {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var nowEpochSecond by remember { mutableLongStateOf(Instant.now().epochSecond) }
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            while (true) {
+                nowEpochSecond = Instant.now().epochSecond
+                delay(60_000L)
+            }
+        }
+    }
+    return nowEpochSecond
 }
 
 @Composable
@@ -173,14 +201,12 @@ private fun UnifiedDashboard(
     state: DashboardUiState.Ready?,
     chartData: DashboardChartData,
     sleepEnabled: Boolean,
+    nowEpochSecond: Long,
 ) {
     val dailySteps = state?.steps ?: 0
     val heartRateRecords = state?.heartRateRecords ?: emptyList()
     val temperatureRecords = state?.temperatureRecords ?: emptyList()
 
-    val nowEpochSecond = remember(heartRateRecords, temperatureRecords) {
-        Instant.now().epochSecond
-    }
     val heartRate = remember(heartRateRecords, nowEpochSecond) {
         todayHeartRateStats(heartRateRecords, nowEpochSecond)
     }
